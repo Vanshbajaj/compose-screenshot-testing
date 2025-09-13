@@ -8,11 +8,11 @@ on:
 
 jobs:
   validate-screenshots:
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
     env:
-      JAVA_HOME_17: /usr/lib/jvm/adoptopenjdk-17-hotspot  # fallback, setup-java will set it properly
-      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
-      ANDROID_HOME: ${{ runner.temp }}/android-sdk
+        JAVA_VERSION: "17"
+        ANDROID_SDK_ROOT: /Users/runner/Library/Android/sdk
+        ANDROID_HOME: /Users/runner/Library/Android/sdk
 
     steps:
       - name: Checkout
