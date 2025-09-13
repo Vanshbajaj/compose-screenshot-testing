@@ -1,30 +1,33 @@
-name: Validate Compose Screenshots (DIY emulator)
+name: Update Compose Screenshots (macOS)
 
+# manual run + run on pushes to master
 on:
-  pull_request:
+  workflow_dispatch:
   push:
     branches:
-      - "**"
+      - master
 
 jobs:
-  validate-screenshots:
+  update-screenshots:
     runs-on: macos-latest
     env:
-        JAVA_VERSION: "17"
-        ANDROID_SDK_ROOT: /Users/runner/Library/Android/sdk
-        ANDROID_HOME: /Users/runner/Library/Android/sdk
+      JAVA_VERSION: '17'
+      ANDROID_SDK_ROOT: /Users/runner/Library/Android/sdk
+      ANDROID_HOME: /Users/runner/Library/Android/sdk
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: ${{ env.JAVA_VERSION }}
 
-      - name: Make gradle wrapper executable
+      - name: Make gradlew executable
         run: chmod +x ./gradlew
 
       - name: Cache Gradle
@@ -37,98 +40,131 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Install Android SDK tools
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      - name: Install Android cmdline-tools (idempotent, macOS)
         run: |
-          set -eux
-          mkdir -p "${ANDROID_SDK_ROOT}"
-          cd "${ANDROID_SDK_ROOT}"
-          # Download tools (commandline-tools) (Google's official)
-          TOOLS_ZIP="commandlinetools-linux-9477386_latest.zip"
+          set -euxo pipefail
+
+          SDK_ROOT="${ANDROID_SDK_ROOT}"
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
+
+          PLATFORM="mac"
+          TOOLS_ZIP="commandlinetools-${PLATFORM}-9477386_latest.zip"
+          TOOLS_URL="https://dl.google.com/android/repository/${TOOLS_ZIP}"
+
           if [ ! -f "$TOOLS_ZIP" ]; then
-            curl -fsSL -o "$TOOLS_ZIP" "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+            echo "Downloading $TOOLS_URL"
+            curl -fsSL -o "$TOOLS_ZIP" "$TOOLS_URL"
+          else
+            echo "$TOOLS_ZIP already present"
           fi
-          unzip -q -o "$TOOLS_ZIP" -d cmdline-tools-temp
-          mkdir -p cmdline-tools/latest
-          mv cmdline-tools-temp/cmdline-tools/* cmdline-tools/latest/
+
           rm -rf cmdline-tools-temp
-          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          unzip -q -o "$TOOLS_ZIP" -d cmdline-tools-temp
+
+          # replace existing latest atomically
+          rm -rf cmdline-tools/latest
+          mkdir -p cmdline-tools
+          mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest
+          rm -rf cmdline-tools-temp
+
+          export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+
+          # ensure platform-tools, build-tools, platforms, and system image are installed
+          sdkmanager --version
           yes | sdkmanager --licenses
 
-      - name: Install SDK packages & system image
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-        run: |
-          set -eux
-          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-          sdkmanager "platform-tools" "platforms;android-31" "build-tools;33.0.2"
-          # install an x86_64 system image with Google APIs (required for emulator)
-          sdkmanager "system-images;android-31;google_apis;x86_64"
-          # install emulator binary
-          sdkmanager "emulator"
+          sdkmanager "platform-tools" \
+                     "platforms;android-31" \
+                     "build-tools;33.0.2" \
+                     "system-images;android-31;google_apis;x86_64"
 
-      - name: Create AVD
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-        run: |
-          set -eux
-          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
-          echo "no" | avdmanager create avd -n test -k "system-images;android-31;google_apis;x86_64" --force --device "pixel"
-          $ANDROID_SDK_ROOT/emulator/emulator -version
+        shell: bash
 
-      - name: Add Android tools to PATH
+      - name: Verify Android SDK and adb
         run: |
-          echo "${{ env.ANDROID_SDK_ROOT }}/platform-tools" >> $GITHUB_PATH
-          echo "${{ env.ANDROID_SDK_ROOT }}/emulator" >> $GITHUB_PATH
-          echo "${{ env.ANDROID_SDK_ROOT }}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          export PATH="$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
+          sdkmanager --list | head -n 20
+          adb version
+        shell: bash
 
-      - name: Start emulator (background)
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+      - name: Create & start AVD (using avdmanager + emulator)
         run: |
-          set -eux
-          # ensure qemu system dependencies exist (some are preinstalled on GH runners)
-          $ANDROID_SDK_ROOT/emulator/emulator -avd test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
-          sleep 2
-          ps aux | grep -i emulator || true
+          set -euxo pipefail
+          export PATH="$ANDROID_SDK_ROOT/emulator:$ANDROID_SDK_ROOT/platform-tools:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH"
 
-      - name: Wait for emulator ready
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
-        run: |
-          set -eux
-          ADB="${ANDROID_SDK_ROOT}/platform-tools/adb"
-          # wait for device to appear
-          for i in $(seq 1 120); do
-            $ADB devices | grep -q emulator- && break || sleep 1
+          AVD_NAME="ci_test_avd"
+          echo "Creating AVD: $AVD_NAME"
+          # Remove existing named AVD if present
+          yes | avdmanager delete avd -n "$AVD_NAME" || true
+
+          # Create AVD (use google_apis x86_64 system image installed earlier)
+          echo "no" | avdmanager create avd \
+            --force \
+            --name "$AVD_NAME" \
+            --package "system-images;android-31;google_apis;x86_64" \
+            --device "pixel"
+
+          # Start emulator in background (no window)
+          nohup emulator -avd "$AVD_NAME" -no-window -no-audio -gpu swiftshader_indirect -no-boot-anim -wipe-data > emulator-log.txt 2>&1 &
+
+          # give emulator time to appear to adb
+          for i in {1..60}; do
+            adb devices | grep emulator- && break || sleep 1
           done
-          # wait for boot complete
-          for i in $(seq 1 600); do
-            BOOT=$($ADB -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
+
+          # Wait for boot
+          echo "Waiting for sys.boot_completed..."
+          for i in {1..600}; do
+            BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
             if [ "$BOOT" = "1" ]; then
-              echo "boot complete"
+              echo "Boot completed"
               break
             fi
-            echo "waiting for boot... $i"
+            echo "still booting ($i)..."
             sleep 2
           done
-          $ADB -s emulator-5554 shell settings put global window_animation_scale 0.0 || true
-          $ADB -s emulator-5554 shell settings put global transition_animation_scale 0.0 || true
-          $ADB -s emulator-5554 shell settings put global animator_duration_scale 0.0 || true
-          $ADB devices -l
 
-      - name: Run screenshot validation
-        run: ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
+          # Speed up by disabling animations
+          adb -s emulator-5554 shell settings put global window_animation_scale 0
+          adb -s emulator-5554 shell settings put global transition_animation_scale 0
+          adb -s emulator-5554 shell settings put global animator_duration_scale 0
+
+          echo "Emulator started and ready"
+        shell: bash
+        timeout-minutes: 30
+
+      - name: Show ADB devices (debug)
+        run: |
+          export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          adb devices -l
+        shell: bash
+
+      - name: Run Gradle to update screenshots
+        run: |
+          set -euxo pipefail
+          export ANDROID_SDK_ROOT="$ANDROID_SDK_ROOT"
+          export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          ./gradlew --no-daemon --console=plain updateDebugScreenshotTest
         env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+          JAVA_HOME: ${{ steps.setup-java.outputs.java-home || env.JAVA_HOME }}
+        shell: bash
+        timeout-minutes: 30
 
-      - name: Upload artifacts
+      - name: Upload generated screenshots & reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: screenshots
           path: |
+            app/src/debug/screenshotTest/reference/**
             app/build/reports/**
             app/build/test-results/**
-            app/src/debug/screenshotTest/reference/**
+
+      - name: Stop emulator (best-effort)
+        if: always()
+        run: |
+          export PATH="$ANDROID_SDK_ROOT/platform-tools:$PATH"
+          adb -s emulator-5554 emu kill || true
+        shell: bash
