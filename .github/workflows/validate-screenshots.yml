@@ -1,16 +1,17 @@
 name: Update Compose Screenshots
 
 on:
-  workflow_dispatch:   # run manually from GitHub Actions tab
+  workflow_dispatch:
   push:
     branches:
-      - master           # optional: only run on main branch
+      - master
 
 jobs:
   update:
     runs-on: macos-latest
     env:
       JAVA_VERSION: '17'
+      ANDROID_HOME: ${{ runner.os == 'macOS' && '/Users/runner/Library/Android/sdk' || '/usr/local/lib/android/sdk' }}
 
     steps:
       - name: Checkout
@@ -27,15 +28,70 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Start emulator and regenerate screenshots
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/gradle.lockfile', '**/gradle/libs.versions.toml', '**/gradle.properties') }}
+          restore-keys: |
+            gradle-cache-${{ runner.os }}-
+
+      - name: Install / Start emulator
         uses: reactivecircus/android-emulator-runner@v2
+        id: emulator
         with:
           api-level: 31
-          target: google_apis
+          target: google_apis        # try google_apis or default; change if unavailable
           arch: x86_64
           avd-name: test
           force-avd-creation: true
           emulator-options: -no-snapshot-save -noaudio -no-boot-anim -no-window
-          emulator-boot-timeout: 1200
+          emulator-boot-timeout: 1200   # seconds; increase if necessary
           disable-animations: true
-          script: ./gradlew --no-daemon --console=plain updateDebugScreenshotTest
+          # do NOT pass the script here — we'll run adb-wait then gradle explicitly.
+
+      - name: Show ADB devices (debug)
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          $ANDROID_HOME/platform-tools/adb devices -l || true
+
+      - name: Wait for emulator to boot (explicit)
+        run: |
+          ADB="$ANDROID_HOME/platform-tools/adb"
+          echo "Waiting for emulator to appear..."
+          for i in {1..120}; do
+            $ADB devices | grep emulator- && break || sleep 1
+          done
+          echo "Waiting for sys.boot_completed..."
+          for i in {1..600}; do
+            BOOT=$($ADB -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
+            if [ "$BOOT" = "1" ]; then
+              echo "Boot completed"
+              break
+            fi
+            echo "still booting ($i)..."
+            sleep 2
+          done
+          $ADB -s emulator-5554 shell settings put global window_animation_scale 0.0
+          $ADB -s emulator-5554 shell settings put global transition_animation_scale 0.0
+          $ADB -s emulator-5554 shell settings put global animator_duration_scale 0.0
+
+      - name: Verify emulator connectivity
+        run: |
+          $ANDROID_HOME/platform-tools/adb -s emulator-5554 shell getprop ro.build.version.sdk
+          $ANDROID_HOME/platform-tools/adb devices -l
+
+      - name: Run Gradle: regenerate screenshots
+        run: ./gradlew --no-daemon --console=plain updateDebugScreenshotTest
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+
+      - name: Upload generated screenshots (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: app/src/debug/screenshotTest/reference/**, app/build/reports/**, app/build/test-results/**
+
