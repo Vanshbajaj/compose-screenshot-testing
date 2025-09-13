@@ -4,7 +4,7 @@ on:
   pull_request:
   push:
     branches:
-      - "**"    # optional: restrict to branches you want
+      - "**"
 
 jobs:
   validate:
@@ -32,18 +32,45 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Install Android SDK components
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # Start emulator and run screenshot validation in one atomic step:
+      - name: Start emulator and validate screenshots
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 31
           target: default
           arch: x86_64
-          emulator-options: "-no-window"
-        # The action installs SDK/build-tools needed by AGP. It also accepts licenses.
+          avd-name: test
+          force-avd-creation: true
+          emulator-options: -no-window
+          emulator-boot-timeout: 600
+          emulator-port: 5554
+          cores: 2
+          disable-animations: true
+          disable-linux-hw-accel: true
+          channel: stable
+          # <<< required: the command(s) to run once the emulator is up
+          # Runs the validate task and collects test output in CI.
+          script: |
+            # show java/kotlin versions (optional)
+            java -version || true
+            ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      # Upload the screenshot reference directory and test reports so you can inspect failures
+      - name: Upload screenshot artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: screenshot-validation-artifacts
+          path: |
+            app/build/reports/test-results/validateDebugScreenshotTest/
+            app/build/test-results/validateDebugScreenshotTest/
+            app/src/debug/screenshotTest/reference/
+            app/build/debug-screenshot-results/ || app/build/reports/screenshots/ || app/build/screenshots/ || app/build/reports/screenshot/ # try common paths
 
-      - name: Run screenshot validation
-        # This task fails if validation fails (which is what you want in CI).
-        run: ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
+      - name: Annotate failure (optional)
+        if: failure()
+        run: |
+          echo "Screenshot validation failed. Check uploaded artifacts for reference screenshots & diffs."
