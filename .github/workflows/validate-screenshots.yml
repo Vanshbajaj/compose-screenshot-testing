@@ -51,13 +51,6 @@ jobs:
           emulator-options: -no-snapshot-save -noaudio -no-boot-anim -no-window
           emulator-boot-timeout: 1200
           disable-animations: true
-
-      - name: Debug: tool versions
-        run: |
-          java -version || true
-          ./gradlew -version || true
-          $ANDROID_HOME/platform-tools/adb version || true
-
       - name: Wait for emulator to boot (robust)
         run: |
           set -euxo pipefail
