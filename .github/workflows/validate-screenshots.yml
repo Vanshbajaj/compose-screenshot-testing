@@ -1,4 +1,4 @@
-name: Validate Compose Screenshots
+name: Validate Compose Screenshots (DIY emulator)
 
 on:
   pull_request:
@@ -7,12 +7,12 @@ on:
       - "**"
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
+  validate-screenshots:
+    runs-on: mac-latest
     env:
-      JAVA_VERSION: '17'
-      ANDROID_HOME: /usr/local/lib/android/sdk   # default for ubuntu runners
-      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      JAVA_HOME_17: /usr/lib/jvm/adoptopenjdk-17-hotspot  # fallback, setup-java will set it properly
+      ANDROID_SDK_ROOT: ${{ runner.temp }}/android-sdk
+      ANDROID_HOME: ${{ runner.temp }}/android-sdk
 
     steps:
       - name: Checkout
@@ -22,7 +22,10 @@ jobs:
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
+          java-version: '17'
+
+      - name: Make gradle wrapper executable
+        run: chmod +x ./gradlew
 
       - name: Cache Gradle
         uses: actions/cache@v4
@@ -34,86 +37,97 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Install / Start emulator (no script)
-        id: emulator
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 31
-          target: default
-          arch: x86_64
-          avd-name: test
-          force-avd-creation: true
-          emulator-options: -no-snapshot-save -noaudio -no-boot-anim -no-window
-          emulator-boot-timeout: 1200
-          disable-animations: true
-          disable-linux-hw-accel: true
-
-      - name: Ensure Android SDK tools are on PATH
-        # The emulator action installs the SDK, but we must add platform-tools + emulator to PATH
+      - name: Install Android SDK tools
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "Adding SDK tools to PATH"
-          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH || true
-          # show where adb is
-          ls -la $ANDROID_HOME/platform-tools || true
-          which adb || true
+          set -eux
+          mkdir -p "${ANDROID_SDK_ROOT}"
+          cd "${ANDROID_SDK_ROOT}"
+          # Download tools (commandline-tools) (Google's official)
+          TOOLS_ZIP="commandlinetools-linux-9477386_latest.zip"
+          if [ ! -f "$TOOLS_ZIP" ]; then
+            curl -fsSL -o "$TOOLS_ZIP" "https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip"
+          fi
+          unzip -q -o "$TOOLS_ZIP" -d cmdline-tools-temp
+          mkdir -p cmdline-tools/latest
+          mv cmdline-tools-temp/cmdline-tools/* cmdline-tools/latest/
+          rm -rf cmdline-tools-temp
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          yes | sdkmanager --licenses
 
-      - name: Show ADB devices (debug)
+      - name: Install SDK packages & system image
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          set -euxo pipefail
-          adb version
-          adb devices -l || true
+          set -eux
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+          sdkmanager "platform-tools" "platforms;android-31" "build-tools;33.0.2"
+          # install an x86_64 system image with Google APIs (required for emulator)
+          sdkmanager "system-images;android-31;google_apis;x86_64"
+          # install emulator binary
+          sdkmanager "emulator"
 
-      - name: Wait for emulator to boot (explicit)
+      - name: Create AVD
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
         run: |
-          set -euxo pipefail
-          ADB="$(which adb)"
-          echo "Waiting for emulator to appear in adb devices..."
+          set -eux
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
+          echo "no" | avdmanager create avd -n test -k "system-images;android-31;google_apis;x86_64" --force --device "pixel"
+          $ANDROID_SDK_ROOT/emulator/emulator -version
+
+      - name: Add Android tools to PATH
+        run: |
+          echo "${{ env.ANDROID_SDK_ROOT }}/platform-tools" >> $GITHUB_PATH
+          echo "${{ env.ANDROID_SDK_ROOT }}/emulator" >> $GITHUB_PATH
+          echo "${{ env.ANDROID_SDK_ROOT }}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+      - name: Start emulator (background)
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          set -eux
+          # ensure qemu system dependencies exist (some are preinstalled on GH runners)
+          $ANDROID_SDK_ROOT/emulator/emulator -avd test -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -accel off > emulator.log 2>&1 &
+          sleep 2
+          ps aux | grep -i emulator || true
+
+      - name: Wait for emulator ready
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          set -eux
+          ADB="${ANDROID_SDK_ROOT}/platform-tools/adb"
+          # wait for device to appear
           for i in $(seq 1 120); do
-            if $ADB devices | grep -q emulator-; then
-              echo "emulator device found"
-              break
-            fi
-            echo "waiting for device ($i)"
-            sleep 1
+            $ADB devices | grep -q emulator- && break || sleep 1
           done
-
-          # wait for system boot property
+          # wait for boot complete
           for i in $(seq 1 600); do
             BOOT=$($ADB -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
             if [ "$BOOT" = "1" ]; then
-              echo "Boot completed"
+              echo "boot complete"
               break
             fi
-            echo "still booting ($i)..."
+            echo "waiting for boot... $i"
             sleep 2
           done
-
-          # speed up animations
           $ADB -s emulator-5554 shell settings put global window_animation_scale 0.0 || true
           $ADB -s emulator-5554 shell settings put global transition_animation_scale 0.0 || true
           $ADB -s emulator-5554 shell settings put global animator_duration_scale 0.0 || true
-
-      - name: Verify emulator connectivity (debug)
-        run: |
-          adb -s emulator-5554 shell getprop ro.build.version.sdk
-          adb devices -l
+          $ADB devices -l
 
       - name: Run screenshot validation
         run: ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
         env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_SDK_ROOT }}
 
-      - name: Upload build/test artifacts (always)
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-artifacts
+          name: screenshots
           path: |
             app/build/reports/**
             app/build/test-results/**
