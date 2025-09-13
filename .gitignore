@@ -1,0 +1,54 @@
+# ===========================================
+# Android / Gradle
+# ===========================================
+*.iml
+.gradle/
+build/
+local.properties
+.gradle/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.ap_ 
+*.dex
+*.class
+bin/
+gen/
+out/
+# IntelliJ/Android Studio
+.idea/
+*.ipr
+*.iws
+*.sw?
+.DS_Store
+
+# ===========================================
+# Kotlin/Java
+# ===========================================
+*.log
+hs_err_pid*
+replay_pid*
+
+# ===========================================
+# Screenshot Testing
+# ===========================================
+
+# Ignore generated screenshot outputs
+app/build/compose-screenshots/
+app/build/screenshot/
+app/build/test-results/
+app/build/reports/
+
+# DO commit golden images
+# (by default the plugin stores goldens under src/screenshotTest/golden/)
+# So don’t ignore these:
+# !app/src/screenshotTest/golden/
+
+# ===========================================
+# Gradle Wrapper
+# ===========================================
+!gradle/wrapper/gradle-wrapper.jar
+!gradlew
+!gradlew.bat
+
