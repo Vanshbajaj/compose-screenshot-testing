@@ -11,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JAVA_VERSION: '17'
-      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk   # default for ubuntu runners
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout
@@ -33,26 +34,57 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Install Android SDK components (emulator)
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Install / Start emulator (no script)
+        id: emulator
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 31
           target: default
           arch: x86_64
-          emulator-options: "-no-window"
-          emulator-boot-timeout: 600
+          avd-name: test
+          force-avd-creation: true
+          emulator-options: -no-snapshot-save -noaudio -no-boot-anim -no-window
+          emulator-boot-timeout: 1200
+          disable-animations: true
+          disable-linux-hw-accel: true
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
+      - name: Ensure Android SDK tools are on PATH
+        # The emulator action installs the SDK, but we must add platform-tools + emulator to PATH
+        run: |
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "Adding SDK tools to PATH"
+          echo "$ANDROID_HOME/platform-tools" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/emulator" >> $GITHUB_PATH
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> $GITHUB_PATH || true
+          # show where adb is
+          ls -la $ANDROID_HOME/platform-tools || true
+          which adb || true
 
-      - name: Wait for emulator to be ready
+      - name: Show ADB devices (debug)
         run: |
           set -euxo pipefail
-          ADB="$ANDROID_HOME/platform-tools/adb"
-          for i in {1..120}; do
-            $ADB devices | grep emulator- && break || sleep 1
+          adb version
+          adb devices -l || true
+
+      - name: Wait for emulator to boot (explicit)
+        run: |
+          set -euxo pipefail
+          ADB="$(which adb)"
+          echo "Waiting for emulator to appear in adb devices..."
+          for i in $(seq 1 120); do
+            if $ADB devices | grep -q emulator-; then
+              echo "emulator device found"
+              break
+            fi
+            echo "waiting for device ($i)"
+            sleep 1
           done
-          for i in {1..600}; do
+
+          # wait for system boot property
+          for i in $(seq 1 600); do
             BOOT=$($ADB -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
             if [ "$BOOT" = "1" ]; then
               echo "Boot completed"
@@ -62,7 +94,27 @@ jobs:
             sleep 2
           done
 
+          # speed up animations
+          $ADB -s emulator-5554 shell settings put global window_animation_scale 0.0 || true
+          $ADB -s emulator-5554 shell settings put global transition_animation_scale 0.0 || true
+          $ADB -s emulator-5554 shell settings put global animator_duration_scale 0.0 || true
+
+      - name: Verify emulator connectivity (debug)
+        run: |
+          adb -s emulator-5554 shell getprop ro.build.version.sdk
+          adb devices -l
+
       - name: Run screenshot validation
         run: ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
         env:
           ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+
+      - name: Upload build/test artifacts (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-artifacts
+          path: |
+            app/build/reports/**
+            app/build/test-results/**
+            app/src/debug/screenshotTest/reference/**
