@@ -1,4 +1,4 @@
-name: Install APK on Emulator (fixed sdkmanager)
+name: Start Emulator & Install APK (POSIX-sh safe)
 
 on:
   workflow_dispatch: {}
@@ -37,7 +37,7 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Install Android SDK & system image (no manual sdkmanager)
+      - name: Setup Android SDK (action installs required images)
         uses: android-actions/setup-android@v3
         with:
           api-level: ${{ env.API_LEVEL }}
@@ -49,7 +49,7 @@ jobs:
         run: ./gradlew :${{ env.APP_MODULE }}:assembleDebug --no-daemon --no-parallel
         shell: bash
 
-      - name: Start emulator & install APK
+      - name: Start emulator & install APK (POSIX-safe script)
         uses: reactivecircus/android-emulator-runner@v2
         timeout-minutes: 15
         with:
@@ -66,20 +66,25 @@ jobs:
             -no-audio
             -wipe-data
             -memory 1536
+          # IMPORTANT: this script is POSIX sh compatible (no "pipefail" usage)
           script: |
-            # run under bash heredoc to keep pipefail safe inside action
-            bash -euo pipefail <<'BASH'
-            set -euo pipefail
+            set -eu
 
             ADB=adb
             APP_APK_PATH=${APP_APK}
 
-            echo "Wait for device (max 600s)..."
+            echo "=== adb initial state ==="
+            $ADB version || true
+            $ADB kill-server || true
+            $ADB start-server || true
+            $ADB devices -l || true
+
+            # wait for emulator to appear and be online
             MAX_WAIT=600
             INTERVAL=4
             elapsed=0
             device=""
-            while [ $elapsed -lt $MAX_WAIT ]; do
+            while [ "$elapsed" -lt "$MAX_WAIT" ]; do
               devline=$($ADB devices -l | grep -E '^emulator-[0-9]+' || true)
               if [ -n "$devline" ]; then
                 device=$(echo "$devline" | awk '{print $1}')
@@ -89,7 +94,7 @@ jobs:
                   break
                 fi
                 if [ "$state" = "offline" ]; then
-                  echo "Device offline — restarting adb"
+                  echo "Device offline — restart adb"
                   $ADB kill-server || true
                   sleep 1
                   $ADB start-server || true
@@ -102,25 +107,34 @@ jobs:
             done
 
             if [ -z "$device" ]; then
-              echo "ERROR: emulator did not appear in ${MAX_WAIT}s"
+              echo "ERROR: emulator did not appear within ${MAX_WAIT}s"
               $ADB devices -l || true
               exit 1
             fi
 
-            echo "Waiting for sys.boot_completed (max 360s)..."
+            echo "Waiting for sys.boot_completed..."
             BOOT_MAX=360
             boot_elapsed=0
-            while [ $boot_elapsed -lt $BOOT_MAX ]; do
+            boot_ok=0
+            while [ "$boot_elapsed" -lt "$BOOT_MAX" ]; do
               boot=$($ADB -s "$device" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              echo "sys.boot_completed=$boot"
               if [ "$boot" = "1" ]; then
-                echo "Boot completed."
+                boot_ok=1
                 break
               fi
               sleep 3
               boot_elapsed=$((boot_elapsed + 3))
+              st=$($ADB devices -l | grep "^${device}" | awk '{print $2}' || true)
+              if [ "$st" = "offline" ]; then
+                echo "Device became offline during boot — restarting adb"
+                $ADB kill-server || true
+                sleep 1
+                $ADB start-server || true
+              fi
             done
 
-            if [ "$boot" != "1" ]; then
+            if [ "$boot_ok" -ne 1 ]; then
               echo "ERROR: boot did not complete in ${BOOT_MAX}s"
               $ADB devices -l || true
               $ADB -s "$device" logcat -d | tail -n 200 || true
@@ -140,5 +154,13 @@ jobs:
               exit 1
             fi
 
-            echo "Installing $APP_APK_PATH"
-            $ADB -s "$device" ins
+            echo "Installing $APP_APK_PATH on $device..."
+            $ADB -s "$device" install -r "$APP_APK_PATH" || true
+            echo "Installed. Listing packages (first 40):"
+            $ADB -s "$device" shell pm list packages | head -n 40 || true
+
+      - name: Upload device log (always)
+        if: always()
+        run: |
+          adb logcat -d | tail -n 200 || true
+        shell: bash
