@@ -1,4 +1,4 @@
-name: Android Emulator — Validate Compose Screenshots
+name: Validate Compose Screenshots (minimal emulator)
 
 on:
   push:
@@ -6,8 +6,13 @@ on:
   pull_request:
 
 jobs:
-  emulator-screenshots:
+  validate-screenshots:
     runs-on: ubuntu-latest
+    timeout-minutes: 30     # whole job will be cancelled after 30m
+
+    env:
+      APP_ID: com.example.myapp   # <-- set your applicationId if you pull app-specific paths
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,59 +38,87 @@ jobs:
         with:
           api-level: 31
           target: google_apis
+          ndk: false
 
-      - name: Assemble app and androidTest APKs
-        run: ./gradlew assembleDebug assembleAndroidTest --no-daemon
+      - name: Assemble app APK (fast - only what's needed)
+        run: ./gradlew assembleDebug assembleAndroidTest --no-daemon --no-parallel
 
-      - name: Start emulator & validate screenshots
+      - name: Start minimal emulator & run screenshot validate
         uses: reactivecircus/android-emulator-runner@v2
+        # Make the emulator step itself timeout sooner than the job
+        timeout-minutes: 20
         with:
           api-level: 31
           target: google_apis
           arch: x86_64
-          profile: "Nexus 6"
-          emulator-options: -no-audio -no-boot-anim
+          profile: "pixel_4a"   # small, modern profile — you can change to Nexus 6 if preferred
+          force-avd-creation: true
+          # fast CI-friendly options: no window, no boot animation, software GPU, no audio
+          emulator-options: >-
+            -no-window
+            -no-boot-anim
+            -gpu swiftshader_indirect
+            -no-snapshot
+            -no-audio
           script: |
-            set -e
-            echo "wait for device..."
+            set -euo pipefail
+
+            echo "::group::Wait for device up (timeout 8m)"
+            # wait up to 8 minutes for sys.boot_completed
+            MAX_SECONDS=480
+            INTERVAL=3
+            elapsed=0
+            while [ $elapsed -lt $MAX_SECONDS ]; do
+              boot_completed=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
+              if [ "$boot_completed" = "1" ]; then
+                echo "Device booted."
+                break
+              fi
+              echo "waiting for boot... ($elapsed / $MAX_SECONDS)"
+              sleep $INTERVAL
+              elapsed=$((elapsed + INTERVAL))
+            done
+
+            if [ "$boot_completed" != "1" ]; then
+              echo "ERROR: emulator did not finish booting within $MAX_SECONDS seconds."
+              adb devices -l || true
+              adb logcat -d | tail -n 200 || true
+              exit 1
+            fi
+            echo "::endgroup::"
+
+            echo "::group::Prepare device"
             adb wait-for-device
-
-            # unlock / ensure display on
             adb shell input keyevent 82 || true
-            adb shell settings put global window_animation_scale 0.0 || true
-            adb shell settings put global transition_animation_scale 0.0 || true
-            adb shell settings put global animator_duration_scale 0.0 || true
+            # speed up animations (some test frameworks rely on this)
+            adb shell settings put global window_animation_scale 0 || true
+            adb shell settings put global transition_animation_scale 0 || true
+            adb shell settings put global animator_duration_scale 0 || true
+            echo "::endgroup::"
 
-            echo "Install APKs (adjust paths if your module isn't 'app')"
+            echo "::group::Install APKs"
             APP_APK=app/build/outputs/apk/debug/app-debug.apk
             TEST_APK=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-
-            if [ ! -f "$APP_APK" ]; then echo "App APK not found at $APP_APK" && ls -R app/build/outputs/apk && exit 1; fi
-            if [ ! -f "$TEST_APK" ]; then echo "Test APK not found at $TEST_APK" && ls -R app/build/outputs/apk && exit 1; fi
+            if [ ! -f "$APP_APK" ]; then echo "Missing $APP_APK" && ls -R app/build/outputs/apk && exit 1; fi
+            if [ ! -f "$TEST_APK" ]; then echo "Missing $TEST_APK" && ls -R app/build/outputs/apk && exit 1; fi
 
             adb install -r "$APP_APK"
             adb install -r "$TEST_APK"
             sleep 2
+            echo "::endgroup::"
 
-            echo "Stop any running Gradle daemons and run the validate screenshot task"
+            echo "::group::Stop gradle daemons and run validate task"
             ./gradlew --stop || true
+            # Run only your screenshot validate task (change if your module/variant differ)
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace || echo "Gradle task exited with non-zero (continue to collect screenshots)"
+            echo "::endgroup::"
 
-            # Run the validate task — this typically requires a connected device/emulator.
-            # Replace ':app:validateDebugScreenshotTest' with your exact task path if different.
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace || true
-
-            echo "Give filesystem a moment to flush screenshots"
-            sleep 2
-
+            echo "::group::Collect screenshots"
             mkdir -p $GITHUB_WORKSPACE/screenshot-output
-
-            # Typical screenshot locations — adjust if your test writes elsewhere
             adb pull /sdcard/screenshots $GITHUB_WORKSPACE/screenshot-output/ || true
-            adb pull /sdcard/Android/data/${{ env.APP_ID }}/files $GITHUB_WORKSPACE/screenshot-output/ || true
-            adb pull /sdcard/Android/data/${{ env.APP_ID }} $GITHUB_WORKSPACE/screenshot-output/ || true
-
-            echo "List pulled files"
+            adb pull /sdcard/Android/data/${APP_ID}/files $GITHUB_WORKSPACE/screenshot-output/ || true
             ls -la $GITHUB_WORKSPACE/screenshot-output || true
+            echo "::endgroup::"
 
       - name: Upload screenshot artifacts
         uses: actions/upload-artifact@v4
@@ -93,6 +126,8 @@ jobs:
           name: compose-screenshots
           path: screenshot-output
 
-      - name: Print device log tail (always)
+      - name: Short device log (always)
         if: always()
-        run: adb logcat -d | tail -n 200 || true
+        run: |
+          echo "=== last 200 lines of device log ==="
+          adb logcat -d | tail -n 200 || true
