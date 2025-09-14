@@ -1,4 +1,4 @@
-name: Validate Compose Screenshots (macOS, google_apis image)
+name: Validate Compose Screenshots (Ubuntu)
 
 on:
   workflow_dispatch:
@@ -8,12 +8,12 @@ on:
 
 jobs:
   validate:
-    runs-on: macos-latest
+    runs-on: ubuntu-latest
     env:
-      API_LEVEL: "35"
-      AVD_NAME: "Test_AVD"
-      ANDROID_SDK_ROOT: /Users/runner/Library/Android/sdk
-      ANDROID_HOME: /Users/runner/Library/Android/sdk
+      API_LEVEL: "31"
+      AVD_NAME: "ci_avd"
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
       JAVA_VERSION: "17"
 
     steps:
@@ -21,6 +21,13 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Install prerequisites (native libs for emulator)
+        run: |
+          sudo dpkg --add-architecture i386 || true
+          sudo apt-get update
+          sudo apt-get install -y unzip curl libc6:i386 libstdc++6:i386 zlib1g:i386 libglu1-mesa libpulse0
+        shell: bash
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -31,40 +38,30 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Install Google's command-line tools + minimal SDK (macOS)
+      - name: Install Android command-line tools + minimal SDK (Linux)
         run: |
           set -euxo pipefail
           SDK_ROOT="${ANDROID_SDK_ROOT}"
           mkdir -p "$SDK_ROOT"
           cd "$SDK_ROOT"
-
-          PLAT="mac"
+          PLAT="linux"
           TOOLS_ZIP="commandlinetools-${PLAT}-9477386_latest.zip"
           TOOLS_URL="https://dl.google.com/android/repository/${TOOLS_ZIP}"
-
           if [ ! -f "$TOOLS_ZIP" ]; then
             echo "Downloading $TOOLS_URL"
             curl -fsSL -o "$TOOLS_ZIP" "$TOOLS_URL"
           else
             echo "$TOOLS_ZIP already present"
           fi
-
           rm -rf cmdline-tools-temp
           unzip -q -o "$TOOLS_ZIP" -d cmdline-tools-temp
-
-          # Replace 'latest' atomically
           rm -rf cmdline-tools/latest
           mkdir -p cmdline-tools
           mv cmdline-tools-temp/cmdline-tools cmdline-tools/latest
           rm -rf cmdline-tools-temp
-
           export PATH="$SDK_ROOT/cmdline-tools/latest/bin:$PATH"
-
-          # Accept licenses (best-effort)
-          yes | sdkmanager --licenses || true
-
-          # Install platform-tools, platform and build-tools; system image will be installed in the AVD step
-          sdkmanager "platform-tools" "platforms;android-${API_LEVEL}" "build-tools;33.0.2"
+          printf '\n' | sdkmanager --licenses || true
+          sdkmanager --install "platform-tools" "platforms;android-${API_LEVEL}" "build-tools;33.0.2" || true
         shell: bash
         timeout-minutes: 20
 
@@ -74,67 +71,57 @@ jobs:
           adb version
         shell: bash
 
-      - name: Create & start AVD (auto-arch, google_apis)
+      - name: Install google_apis x86_64 system image
         run: |
           set -euxo pipefail
-
-          export PATH="${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
-          AVD_NAME="${AVD_NAME:-ci_avd}"
-          API_LEVEL="${API_LEVEL:-31}"
-          DEVICE="pixel"
-
-          # Detect host architecture and choose appropriate google_apis system image
-          HOST_ARCH=$(uname -m)
-          if [ "$HOST_ARCH" = "arm64" ] || [ "$HOST_ARCH" = "aarch64" ]; then
-            SYS_IMG_PKG="system-images;android-${API_LEVEL};google_apis;arm64-v8a"
+          export PATH="${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          SYS_IMG="system-images;android-${API_LEVEL};google_apis;x86_64"
+          if sdkmanager --list | grep -q "$SYS_IMG"; then
+            echo "$SYS_IMG already present"
           else
-            SYS_IMG_PKG="system-images;android-${API_LEVEL};google_apis;x86_64"
+            printf '\n' | sdkmanager --install "$SYS_IMG" || true
           fi
+        shell: bash
+        timeout-minutes: 20
 
-          echo "Host arch: $HOST_ARCH -> using system image: $SYS_IMG_PKG"
-
-          # Install the chosen system image (idempotent)
-          yes | sdkmanager --install "$SYS_IMG_PKG"
-
-          # Remove any existing AVD with same name
-          if avdmanager list avd | grep -q "^Name: ${AVD_NAME}$"; then
-            echo "Deleting existing AVD ${AVD_NAME}"
-            yes | avdmanager delete avd -n "$AVD_NAME" || true
+      - name: Create & start AVD (x86_64, no window)
+        run: |
+          set -euxo pipefail
+          export PATH="${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
+          AVD="$AVD_NAME"
+          SYS_IMG="system-images;android-${API_LEVEL};google_apis;x86_64"
+          DEVICE="pixel"
+          if avdmanager list avd | grep -q "^Name: ${AVD}$"; then
+            echo "Deleting existing AVD ${AVD}"
+            yes | avdmanager delete avd -n "$AVD" || true
           fi
-
-          # Create AVD (non-interactive). Answer "no" to custom hardware profile prompt.
-          echo "no" | avdmanager create avd --force --name "$AVD_NAME" --package "$SYS_IMG_PKG" --device "$DEVICE"
-
-          # Start emulator in background (no window)
-          nohup emulator -avd "$AVD_NAME" -no-window -no-audio -no-boot-anim -wipe-data > emulator.log 2>&1 &
+          echo "no" | avdmanager create avd --force --name "$AVD" --package "$SYS_IMG" --device "$DEVICE"
+          nohup emulator -avd "$AVD" -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -wipe-data > emulator.log 2>&1 &
           EMU_PID=$!
-          echo "Started emulator (pid $EMU_PID)"
-
+          echo "emulator pid: $EMU_PID"
           ADB="${ANDROID_SDK_ROOT}/platform-tools/adb"
-
-          # wait for emulator to appear in adb devices
+          $ADB kill-server || true
+          $ADB start-server
           for i in {1..120}; do
             if $ADB devices | grep -q '^emulator-'; then
-              echo "emulator listed by adb"
+              echo "emulator listed in adb"
               break
             fi
             echo "waiting for adb listing ($i)..."
             sleep 1
           done
-
           EMU_ID=$($ADB devices | awk '/^emulator-/ {print $1; exit}' || true)
           if [ -z "$EMU_ID" ]; then
-            echo "No emulator device found. Dumping emulator.log and adb devices:"
+            echo "No emulator device found. Dump emulator.log and adb devices:"
             tail -n 200 emulator.log || true
             $ADB devices -l || true
             exit 1
           fi
           echo "Using device id: $EMU_ID"
-
           $ADB -s "$EMU_ID" wait-for-device
-
-          # wait for boot completion
           BOOTED=""
+          DEV_BOOT=""
+          BOOT_ANIM=""
           for i in {1..600}; do
             BOOTED=$($ADB -s "$EMU_ID" shell getprop sys.boot_completed 2>/dev/null || echo "")
             if [ "$BOOTED" = "1" ]; then
@@ -144,11 +131,11 @@ jobs:
             DEV_BOOT=$($ADB -s "$EMU_ID" shell getprop dev.bootcomplete 2>/dev/null || echo "")
             BOOT_ANIM=$($ADB -s "$EMU_ID" shell getprop init.svc.bootanim 2>/dev/null || echo "")
             if [ "$DEV_BOOT" = "1" ] || [ "$BOOT_ANIM" = "stopped" ]; then
-              echo "Fallback indicates boot: dev.bootcomplete=$DEV_BOOT, bootanim=$BOOT_ANIM"
+              echo "Fallback boot ok: dev.bootcomplete=$DEV_BOOT, bootanim=$BOOT_ANIM"
               break
             fi
             if ! kill -0 $EMU_PID 2>/dev/null; then
-              echo "Emulator died. Dumping emulator.log:"
+              echo "Emulator process died. Dump emulator.log:"
               tail -n 200 emulator.log || true
               $ADB devices -l || true
               exit 1
@@ -159,23 +146,18 @@ jobs:
             fi
             sleep 2
           done
-
           if [ "$BOOTED" != "1" ] && [ "$DEV_BOOT" != "1" ] && [ "$BOOT_ANIM" != "stopped" ]; then
-            echo "Emulator did not boot within timeout. Dumping emulator.log + adb devices:"
+            echo "Emulator did not boot in time. Dump emulator.log + adb devices:"
             tail -n 200 emulator.log || true
             $ADB devices -l || true
             exit 1
           fi
-
-          echo "Disabling animations"
           $ADB -s "$EMU_ID" shell settings put global window_animation_scale 0
           $ADB -s "$EMU_ID" shell settings put global transition_animation_scale 0
           $ADB -s "$EMU_ID" shell settings put global animator_duration_scale 0
-
-          echo "Emulator ready; devices:"
-          $ADB devices -l
+          echo "Emulator ready"
         shell: bash
-        timeout-minutes: 40
+        timeout-minutes: 30
 
       - name: Show ADB devices (debug)
         run: |
@@ -183,8 +165,11 @@ jobs:
           adb devices -l
         shell: bash
 
+      - name: validate screenshots
+        run: ./gradlew --no-daemon --console=plain validateDebugScreenshotTest
+        timeout-minutes: 30
 
-      - name: Upload generated screenshots & reports
+      - name: Upload artifacts (screenshots & reports)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -194,7 +179,7 @@ jobs:
             app/build/reports/**
             app/build/test-results/**
 
-      - name: Stop emulator (best-effort)
+      - name: Kill emulator (best-effort)
         if: always()
         run: |
           export PATH="${ANDROID_SDK_ROOT}/platform-tools:${PATH}"
