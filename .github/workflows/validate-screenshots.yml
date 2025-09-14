@@ -1,9 +1,9 @@
-name: Start Emulator & Install App APK
+name: Install App APK on Emulator (manual / push)
 
 on:
+  workflow_dispatch: {}      # allows you to run it manually from Actions UI
   push:
     branches: ["**"]
-  pull_request:
 
 jobs:
   install-apk:
@@ -11,7 +11,12 @@ jobs:
     timeout-minutes: 30
 
     env:
-      APP_APK: app/build/outputs/apk/debug/app-debug.apk  # adjust if your module/name differs
+      APP_APK: app/build/outputs/apk/debug/app-debug.apk
+      AVD_NAME: ci_avd
+      API_LEVEL: 28
+      SYSTEM_IMAGE: "system-images;android-28;google_apis;x86"
+      DEVICE: "Nexus 5"
+      ANDROID_HOME: /usr/local/lib/android/sdk
 
     steps:
       - name: Checkout
@@ -23,118 +28,128 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      - name: Install required SDK packages
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT=${ANDROID_HOME}
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "platform-tools" "emulator" "platforms;android-${API_LEVEL}" "${SYSTEM_IMAGE}"
+
       - name: Build app APK (only app)
+        shell: bash
         run: ./gradlew assembleDebug --no-daemon --no-parallel
 
-      - name: Start minimal emulator & install app APK
-        uses: reactivecircus/android-emulator-runner@v2
-        timeout-minutes: 12
-        with:
-          api-level: 28
-          target: google_apis
-          arch: x86
-          profile: "Nexus 5"
-          force-avd-creation: true
-          emulator-options: >-
-            -no-window
-            -no-boot-anim
-            -gpu swiftshader_indirect
-            -no-snapshot
-            -no-audio
-            -wipe-data
-            -memory 1536
-          script: |
-            bash -euo pipefail <<'BASH'
-            #!/usr/bin/env bash
-            set -euo pipefail
+      - name: Create AVD (CI-friendly)
+        shell: bash
+        run: |
+          export ANDROID_SDK_ROOT=${ANDROID_HOME}
+          echo "no" | avdmanager create avd --force -n "${AVD_NAME}" -k "${SYSTEM_IMAGE}" --device "${DEVICE}"
+          mkdir -p $HOME/.android/avd/${AVD_NAME}.avd
+          # set conservative resources so emulator runs under TCG reliably
+          echo "hw.cpu.ncore=2" >> $HOME/.android/avd/${AVD_NAME}.avd/config.ini || true
+          echo "hw.ramSize=1536" >> $HOME/.android/avd/${AVD_NAME}.avd/config.ini || true
 
-            echo "::group::ADB initial state"
-            adb version || true
-            adb kill-server || true
-            adb start-server || true
-            adb devices -l || true
-            echo "::endgroup::"
+      - name: Start emulator, wait, install APK (pure bash)
+        shell: bash
+        env:
+          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
+          ANDROID_HOME: ${{ env.ANDROID_HOME }}
+        run: |
+          set -eu
 
-            # Wait for emulator to appear and be ONLINE
-            MAX_WAIT=300
-            INTERVAL=4
-            elapsed=0
-            device_id=""
-            while [ $elapsed -lt $MAX_WAIT ]; do
-              # refresh adb occasionally to avoid races
-              if [ $((elapsed % 30)) -eq 0 ]; then
-                adb kill-server || true
-                sleep 1
-                adb start-server || true
-              fi
+          EMULATOR_BIN="${ANDROID_HOME}/emulator/emulator"
+          ADB_BIN="${ANDROID_HOME}/platform-tools/adb"
 
-              devline=$(adb devices -l | grep -E '^emulator-[0-9]+' || true)
-              if [ -n "$devline" ]; then
-                device_id=$(echo "$devline" | awk '{print $1}')
-                state=$(echo "$devline" | awk '{print $2}')
-                echo "Found device: $device_id state=$state"
-                if [ "$state" = "device" ]; then
-                  echo "Device is ONLINE"
-                  break
-                fi
-                if [ "$state" = "offline" ]; then
-                  echo "Device offline — restarting adb and retrying"
-                  adb kill-server || true
-                  sleep 1
-                  adb start-server || true
-                fi
-              else
-                echo "No emulator device yet..."
-              fi
+          # start emulator in background and capture log
+          "${EMULATOR_BIN}" -avd "${AVD_NAME}" -no-window -no-boot-anim -gpu swiftshader_indirect -no-snapshot -no-audio -wipe-data -memory 1536 > /tmp/emu.log 2>&1 & 
+          EMU_PID=$!
+          echo "Emulator PID=${EMU_PID}; waiting a few seconds..."
+          sleep 4
 
-              sleep $INTERVAL
-              elapsed=$((elapsed + INTERVAL))
-            done
+          # ensure adb server running
+          "${ADB_BIN}" kill-server || true
+          "${ADB_BIN}" start-server || true
 
-            if [ -z "$device_id" ]; then
-              echo "ERROR: emulator device did not appear within ${MAX_WAIT}s"
-              adb devices -l || true
-              adb logcat -d | tail -n 200 || true
-              exit 1
-            fi
-
-            # Wait for boot completion (short)
-            BOOT_MAX=180
-            boot_elapsed=0
-            while [ $boot_elapsed -lt $BOOT_MAX ]; do
-              boot=$(adb -s "$device_id" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
-              if [ "$boot" = "1" ]; then
-                echo "Boot completed."
+          # wait for emulator device to appear and be 'device'
+          MAX_WAIT=600
+          INTERVAL=4
+          elapsed=0
+          device_id=""
+          while [ $elapsed -lt $MAX_WAIT ]; do
+            devline=$("${ADB_BIN}" devices -l | grep -E '^emulator-[0-9]+' || true)
+            if [ -n "$devline" ]; then
+              device_id=$(echo "$devline" | awk '{print $1}')
+              state=$(echo "$devline" | awk '{print $2}')
+              echo "Found ${device_id} state=${state}"
+              if [ "$state" = "device" ]; then
+                echo "Device ONLINE"
                 break
               fi
-              echo "Waiting for sys.boot_completed... ($boot_elapsed/$BOOT_MAX)"
-              sleep 3
-              boot_elapsed=$((boot_elapsed + 3))
-            done
-
-            if [ "$boot" != "1" ]; then
-              echo "ERROR: boot not completed within ${BOOT_MAX}s"
-              adb devices -l || true
-              adb logcat -d | tail -n 200 || true
-              exit 1
+              if [ "$state" = "offline" ]; then
+                echo "Device offline — restarting adb"
+                "${ADB_BIN}" kill-server || true
+                sleep 1
+                "${ADB_BIN}" start-server || true
+              fi
+            else
+              echo "No emulator device yet..."
             fi
+            sleep $INTERVAL
+            elapsed=$((elapsed + INTERVAL))
+          done
 
-            echo "::group::Install APK"
-            if [ ! -f "${APP_APK}" ]; then
-              echo "APK not found at ${APP_APK}"
-              ls -R app/build/outputs/apk || true
-              exit 1
+          if [ -z "${device_id}" ]; then
+            echo "ERROR: emulator did not appear in ${MAX_WAIT}s"
+            tail -n 200 /tmp/emu.log || true
+            "${ADB_BIN}" devices -l || true
+            kill ${EMU_PID} || true
+            exit 1
+          fi
+
+          # wait for boot
+          BOOT_MAX=360
+          boot_elapsed=0
+          while [ $boot_elapsed -lt $BOOT_MAX ]; do
+            boot=$("${ADB_BIN}" -s "${device_id}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+            echo "sys.boot_completed=${boot}"
+            if [ "${boot}" = "1" ]; then
+              echo "Boot completed."
+              break
             fi
+            sleep 3
+            boot_elapsed=$((boot_elapsed + 3))
+          done
 
-            adb -s "$device_id" wait-for-device
-            adb -s "$device_id" install -r "${APP_APK}"
-            echo "APK installed: ${APP_APK}"
-            echo "::endgroup::"
+          if [ "${boot}" != "1" ]; then
+            echo "ERROR: boot did not complete in ${BOOT_MAX}s"
+            tail -n 400 /tmp/emu.log || true
+            "${ADB_BIN}" devices -l || true
+            "${ADB_BIN}" -s "${device_id}" logcat -d | tail -n 200 || true
+            kill ${EMU_PID} || true
+            exit 1
+          fi
 
-            BASH
+          # install apk
+          if [ ! -f "${APP_APK}" ]; then
+            echo "APK not found at ${APP_APK}"
+            ls -R app/build/outputs/apk || true
+            kill ${EMU_PID} || true
+            exit 1
+          fi
 
-      - name: Short device log (always)
-        if: always()
+          echo "Installing ${APP_APK} to ${device_id}..."
+          "${ADB_BIN}" -s "${device_id}" install -r "${APP_APK}" || true
+          echo "Installed. Showing packages (first 30):"
+          "${ADB_BIN}" -s "${device_id}" shell pm list packages | head -n 30 || true
+
+          # kill emulator gracefully
+          echo "Stopping emulator..."
+          kill ${EMU_PID} || true
+          sleep 2
+          echo "Done."
+
+      - name: Show emulator log on failure
+        if: failure()
+        shell: bash
         run: |
-          echo "=== last 200 lines of device log ==="
-          adb logcat -d | tail -n 200 || true
+          test -f /tmp/emu.log && echo "=== emulator log tail ===" && tail -n 400 /tmp/emu.log || true
