@@ -1,4 +1,4 @@
-name: Validate Compose Screenshots (minimal emulator)
+name: Validate Compose Screenshots (fast + adb-resilient)
 
 on:
   push:
@@ -8,10 +8,12 @@ on:
 jobs:
   validate-screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 30     # whole job will be cancelled after 30m
+    timeout-minutes: 30    # whole job will be cancelled after 30m
 
     env:
-      APP_ID: com.example.myapp   # <-- set your applicationId if you pull app-specific paths
+      # <-- EDIT these to match your project
+      APP_ID: com.example.myapp     # your applicationId (used for pulling files)
+      VALIDATE_TASK: ":app:validateDebugScreenshotTest"  # change if your module/variant differ
 
     steps:
       - name: Checkout
@@ -33,92 +35,154 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-gradle-
 
-      - name: Setup Android SDK
+      - name: Setup Android SDK (API 28 x86)
         uses: android-actions/setup-android@v3
         with:
-          api-level: 31
+          api-level: 28
           target: google_apis
           ndk: false
 
-      - name: Assemble app APK (fast - only what's needed)
+      - name: Assemble APKs (app + androidTest)
         run: ./gradlew assembleDebug assembleAndroidTest --no-daemon --no-parallel
 
-      - name: Start minimal emulator & run screenshot validate
+      - name: Start minimal emulator & run validate
         uses: reactivecircus/android-emulator-runner@v2
-        # Make the emulator step itself timeout sooner than the job
-        timeout-minutes: 20
+        timeout-minutes: 15   # this step will be killed after 15m (prevents long hangs)
         with:
-          api-level: 31
+          api-level: 28
           target: google_apis
-          arch: x86_64
-          profile: "pixel_4a"   # small, modern profile — you can change to Nexus 6 if preferred
+          arch: x86
+          profile: "Nexus 5"          # small device for faster boot
           force-avd-creation: true
-          # fast CI-friendly options: no window, no boot animation, software GPU, no audio
           emulator-options: >-
             -no-window
             -no-boot-anim
             -gpu swiftshader_indirect
             -no-snapshot
             -no-audio
+            -wipe-data
+            -memory 1536
           script: |
+            bash -euo pipefail <<'BASH'
+            #!/usr/bin/env bash
             set -euo pipefail
 
-            echo "::group::Wait for device up (timeout 8m)"
-            # wait up to 8 minutes for sys.boot_completed
-            MAX_SECONDS=480
-            INTERVAL=3
+            echo "::group::ADB initial state"
+            adb version || true
+            adb kill-server || true
+            adb start-server || true
+            adb devices -l || true
+            echo "::endgroup::"
+
+            # Wait for emulator device to appear and be ONLINE (not offline)
+            MAX_WAIT=600   # wait up to 10 minutes for the emulator to appear (adjust if needed)
+            INTERVAL=4
             elapsed=0
-            while [ $elapsed -lt $MAX_SECONDS ]; do
-              boot_completed=$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')
-              if [ "$boot_completed" = "1" ]; then
-                echo "Device booted."
-                break
+            device_id=""
+            echo "::group::Waiting for emulator device (max ${MAX_WAIT}s)"
+            while [ $elapsed -lt $MAX_WAIT ]; do
+              # occasionally restart adb to clear races
+              if [ $((elapsed % 30)) -eq 0 ]; then
+                adb kill-server || true
+                sleep 1
+                adb start-server || true
               fi
-              echo "waiting for boot... ($elapsed / $MAX_SECONDS)"
+
+              devline=$(adb devices -l | grep -E '^emulator-[0-9]+' || true)
+              if [ -n "$devline" ]; then
+                device_id=$(echo "$devline" | awk '{print $1}')
+                state=$(echo "$devline" | awk '{print $2}')
+                echo "Found device: $device_id state=$state"
+                if [ "$state" = "device" ]; then
+                  echo "Device is ONLINE"
+                  break
+                fi
+                if [ "$state" = "offline" ]; then
+                  echo "Device offline — restarting adb and retrying"
+                  adb kill-server || true
+                  sleep 1
+                  adb start-server || true
+                fi
+              else
+                echo "No emulator device yet..."
+              fi
+
               sleep $INTERVAL
               elapsed=$((elapsed + INTERVAL))
             done
+            echo "::endgroup::"
 
-            if [ "$boot_completed" != "1" ]; then
-              echo "ERROR: emulator did not finish booting within $MAX_SECONDS seconds."
+            if [ -z "$device_id" ]; then
+              echo "ERROR: emulator device did not appear within ${MAX_WAIT}s"
               adb devices -l || true
-              adb logcat -d | tail -n 200 || true
+              adb logcat -d | tail -n 400 || true
               exit 1
             fi
+
+            # Wait for sys.boot_completed to be set
+            echo "::group::Waiting for sys.boot_completed (max 360s)"
+            BOOT_MAX=360
+            boot_elapsed=0
+            boot_ok=0
+            while [ $boot_elapsed -lt $BOOT_MAX ]; do
+              boot=$(adb -s "$device_id" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r' || true)
+              echo "sys.boot_completed=$boot"
+              if [ "$boot" = "1" ]; then
+                boot_ok=1
+                break
+              fi
+              sleep 3
+              boot_elapsed=$((boot_elapsed + 3))
+              st=$(adb devices -l | grep "^${device_id}" | awk '{print $2}' || true)
+              if [ "$st" = "offline" ]; then
+                echo "Device became offline during boot — restarting adb"
+                adb kill-server || true
+                sleep 1
+                adb start-server || true
+              fi
+            done
             echo "::endgroup::"
 
-            echo "::group::Prepare device"
-            adb wait-for-device
-            adb shell input keyevent 82 || true
-            # speed up animations (some test frameworks rely on this)
-            adb shell settings put global window_animation_scale 0 || true
-            adb shell settings put global transition_animation_scale 0 || true
-            adb shell settings put global animator_duration_scale 0 || true
-            echo "::endgroup::"
+            if [ "$boot_ok" -ne 1 ]; then
+              echo "ERROR: boot did not complete in ${BOOT_MAX}s"
+              adb devices -l || true
+              adb -s "$device_id" shell getprop ro.build.version.release || true
+              adb logcat -d | tail -n 400 || true
+              exit 1
+            fi
 
-            echo "::group::Install APKs"
+            # Prepare device and install APKs
+            echo "::group::Prepare device & install apks"
+            adb -s "$device_id" wait-for-device
+            adb -s "$device_id" shell input keyevent 82 || true
+            adb -s "$device_id" shell settings put global window_animation_scale 0 || true
+            adb -s "$device_id" shell settings put global transition_animation_scale 0 || true
+            adb -s "$device_id" shell settings put global animator_duration_scale 0 || true
+
             APP_APK=app/build/outputs/apk/debug/app-debug.apk
             TEST_APK=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-            if [ ! -f "$APP_APK" ]; then echo "Missing $APP_APK" && ls -R app/build/outputs/apk && exit 1; fi
-            if [ ! -f "$TEST_APK" ]; then echo "Missing $TEST_APK" && ls -R app/build/outputs/apk && exit 1; fi
+            if [ ! -f "$APP_APK" ]; then echo "Missing $APP_APK" && ls -R app/build/outputs/apk || true && exit 1; fi
+            if [ ! -f "$TEST_APK" ]; then echo "Missing $TEST_APK" && ls -R app/build/outputs/apk || true && exit 1; fi
 
-            adb install -r "$APP_APK"
-            adb install -r "$TEST_APK"
+            adb -s "$device_id" install -r "$APP_APK"
+            adb -s "$device_id" install -r "$TEST_APK"
             sleep 2
             echo "::endgroup::"
 
-            echo "::group::Stop gradle daemons and run validate task"
+            # Run only the screenshot validation task
+            echo "::group::Run validate screenshot task"
             ./gradlew --stop || true
-            # Run only your screenshot validate task (change if your module/variant differ)
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace || echo "Gradle task exited with non-zero (continue to collect screenshots)"
+            ./gradlew ${VALIDATE_TASK} --no-daemon --stacktrace || echo "validate task failed (continuing to collect artifacts)"
             echo "::endgroup::"
 
+            # Pull screenshots / files (adjust paths if your tests write elsewhere)
             echo "::group::Collect screenshots"
             mkdir -p $GITHUB_WORKSPACE/screenshot-output
-            adb pull /sdcard/screenshots $GITHUB_WORKSPACE/screenshot-output/ || true
-            adb pull /sdcard/Android/data/${APP_ID}/files $GITHUB_WORKSPACE/screenshot-output/ || true
+            adb -s "$device_id" pull /sdcard/screenshots $GITHUB_WORKSPACE/screenshot-output/ || true
+            adb -s "$device_id" pull /sdcard/Android/data/${APP_ID}/files $GITHUB_WORKSPACE/screenshot-output/ || true
             ls -la $GITHUB_WORKSPACE/screenshot-output || true
             echo "::endgroup::"
+            BASH
 
       - name: Upload screenshot artifacts
         uses: actions/upload-artifact@v4
