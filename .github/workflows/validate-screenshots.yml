@@ -77,52 +77,100 @@ jobs:
           adb version
         shell: bash
 
-      - name: Create & start AVD (default system image)
+      - name: Create & start AVD (robust, macOS)
         run: |
           set -euxo pipefail
+          
           export PATH="${ANDROID_SDK_ROOT}/emulator:${ANDROID_SDK_ROOT}/platform-tools:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${PATH}"
-          AVD="${AVD_NAME}"
-
-          # Delete any existing AVD with same name
-          avdmanager list avd | grep -q "$AVD" && yes | avdmanager delete avd -n "$AVD" || true
-
-          # Create AVD using the 'default' x86_64 system image we installed
-          # 'echo "no"' answers "Do you wish to create a custom hardware profile?" with "no"
-          echo "no" | avdmanager create avd --force --name "$AVD" \
-            --package "system-images;android-${API_LEVEL};default;x86_64" \
-            --device "pixel"
-
-          # Start emulator in background using host GPU for macOS (faster)
-          nohup emulator -avd "$AVD" -no-window -no-audio -no-boot-anim -wipe-data > emulator.log 2>&1 &
-
-          # wait for emulator to appear to adb
-          for i in {1..60}; do
-            if adb devices | grep -q emulator-; then
-              break
-            fi
+          AVD_NAME="ci_avd"
+          API_LEVEL="${API_LEVEL:-31}"
+          SYS_IMG="system-images;android-${API_LEVEL};default;x86_64"
+          DEVICE="pixel"
+          
+          echo "Using SYS_IMG=$SYS_IMG  AVD_NAME=$AVD_NAME"
+          
+          # delete previous AVD if present
+          if avdmanager list avd | grep -q "^Name: ${AVD_NAME}$"; then
+            echo "Deleting existing AVD ${AVD_NAME}"
+            yes | avdmanager delete avd -n "$AVD_NAME" || true
+          fi
+          
+          # create the AVD (noninteractive)
+          echo "no" | avdmanager create avd --force --name "$AVD_NAME" --package "$SYS_IMG" --device "$DEVICE"
+          
+          # start emulator in background using host GPU (preferred on mac)
+          nohup emulator -avd "$AVD_NAME" -no-window -no-audio -no-boot-anim -wipe-data -gpu host > emulator.log 2>&1 &
+          EMU_PID=$!
+          echo "Emulator pid: $EMU_PID; waiting for adb..."
+          
+          ADB="${ANDROID_SDK_ROOT}/platform-tools/adb"
+          
+          # wait for emulator to show up in adb devices
+          for i in {1..120}; do
             sleep 1
-          done
-
-          # wait for boot completion
-          for i in {1..600}; do
-            BOOT=$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo "")
-            if [ "$BOOT" = "1" ]; then
-              echo "booted"
+            if $ADB devices | grep -q '^emulator-'; then
+              echo "emulator listed by adb"
               break
             fi
-            echo "waiting for boot ($i)..."
+            echo "waiting for adb listing ($i)..."
+          done
+          
+          # ensure we have a device id (capture first emulator entry)
+          EMU_ID=$($ADB devices | awk '/^emulator-/ {print $1; exit}')
+          if [ -z "$EMU_ID" ]; then
+            echo "No emulator device found. Dumping emulator.log and adb devices:"
+            tail -n 200 emulator.log || true
+            $ADB devices -l || true
+            exit 1
+          fi
+          echo "Using device id: $EMU_ID"
+          
+          # wait-for-device (blocks until device present)
+          $ADB -s "$EMU_ID" wait-for-device
+          
+          # wait for boot complete (poll several props)
+          BOOTED=""
+          for i in {1..600}; do
+            BOOTED=$($ADB -s "$EMU_ID" shell getprop sys.boot_completed 2>/dev/null || echo "")
+            if [ "$BOOTED" = "1" ]; then
+              echo "sys.boot_completed=1"
+              break
+            fi
+            DEV_BOOT=$($ADB -s "$EMU_ID" shell getprop dev.bootcomplete 2>/dev/null || echo "")
+            BOOT_ANIM=$($ADB -s "$EMU_ID" shell getprop init.svc.bootanim 2>/dev/null || echo "")
+            if [ "$DEV_BOOT" = "1" ] || [ "$BOOT_ANIM" = "stopped" ]; then
+              echo "Fallback boot complete detected (dev.bootcomplete=$DEV_BOOT, bootanim=$BOOT_ANIM)"
+              break
+            fi
+            if ! kill -0 $EMU_PID 2>/dev/null; then
+              echo "Emulator process died. Dumping emulator.log:"
+              tail -n 200 emulator.log || true
+              $ADB devices -l || true
+              exit 1
+            fi
+            if (( i % 30 == 0 )); then
+              echo "still booting ($i). tail emulator.log:"
+              tail -n 50 emulator.log || true
+            fi
             sleep 2
           done
-
-          # disable animations for speed
-          adb -s emulator-5554 shell settings put global window_animation_scale 0
-          adb -s emulator-5554 shell settings put global transition_animation_scale 0
-          adb -s emulator-5554 shell settings put global animator_duration_scale 0
-
-          adb devices -l
+          
+          if [ "$BOOTED" != "1" ] && [ "$DEV_BOOT" != "1" ] && [ "$BOOT_ANIM" != "stopped" ]; then
+            echo "Emulator did not boot in time. Dumping emulator.log + adb devices:"
+            tail -n 200 emulator.log || true
+            $ADB devices -l || true
+            exit 1
+          fi
+          
+          echo "Disabling animations"
+          $ADB -s "$EMU_ID" shell settings put global window_animation_scale 0
+          $ADB -s "$EMU_ID" shell settings put global transition_animation_scale 0
+          $ADB -s "$EMU_ID" shell settings put global animator_duration_scale 0
+          
+          echo "Emulator ready; devices:"
+          $ADB devices -l
         shell: bash
-        timeout-minutes: 30
-
+        timeout-minutes: 40
 
 
 
