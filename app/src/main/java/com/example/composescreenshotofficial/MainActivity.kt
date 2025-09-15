@@ -40,7 +40,7 @@ fun SampleScreen() {
              horizontalAlignment = Alignment.CenterHorizontally
          ) {
              Text(
-                 "Hello, Compose Official Screenshot!",
+                 "Hello, Compose Screenshot!",
                  style = MaterialTheme.typography.headlineSmall
              )
              Spacer(Modifier.height(8.dp))
