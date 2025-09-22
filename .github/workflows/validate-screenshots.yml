@@ -1,53 +1,36 @@
-name: Android CI - validate screenshot test
+name: Android CI - validate screenshot test (single task)
 
 on: [push, pull_request]
 
 jobs:
-  build-and-validate-screenshots:
+  validate-screenshots-only:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     env:
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Set up Java 17 (Temurin)
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: |
-            gradle-cache-${{ runner.os }}-
-
-      - name: Ensure Gradle wrapper is executable
+      - name: Ensure gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Run Android Emulator, install app, and validate screenshots
+      - name: Start emulator and run only validateDebugScreenshotTest
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 28
           profile: 'Nexus 6'
-          # headless, deterministic flags
           emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
           script: |
-            # POSIX-compatible; avoid bash-specific features so the action doesn't split lines
+            # POSIX-safe; reactivecircus waits for boot for us
             set -eu
 
             echo "JAVA: $(java -version 2>&1 | head -n 1)"
@@ -55,49 +38,20 @@ jobs:
             # stop stale daemons (best-effort)
             ./gradlew --no-daemon --stop || true
 
-            # reactivecircus/runner waits for emulator boot itself; build APKs now
-            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
+            # run only the user-requested task
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace
 
-            # Install APKs onto emulator (best-effort)
-            ./gradlew :app:installDebug || true
-            ./gradlew :app:installDebugAndroidTest || true
-
-            # Run the screenshot validation task (allow failing but continue so artifacts upload)
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
-
-            echo "-- Listing outputs for artifact collection --"
-            ls -la build/reports/problems || true
-            ls -la app/build/test-results/validateDebugScreenshotTest || true
+            # list outputs (helpful for debugging)
             ls -la app/build/outputs/screenshotTest-results || true
+            ls -la app/build/test-results/validateDebugScreenshotTest || true
+            ls -la build/reports/problems || true
 
-            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
-              echo "==== results.json ===="
-              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
-            fi
-
-      - name: Upload problems report
+      - name: Upload screenshot artifacts (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: problems-report
-          path: build/reports/problems/
-
-      - name: Upload test results (XML)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: validation-test-results-xml
-          path: app/build/test-results/validateDebugScreenshotTest/
-
-      - name: Upload screenshot test outputs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screenshotTest-results
+          name: screenshot-test-outputs
           path: |
             app/build/outputs/screenshotTest-results
-            app/src/debug/screenshotTest/reference
-
-      - name: Terminate emulator (best-effort)
-        if: always()
-        run: adb -s emulator-5554 emu kill || true
+            app/build/test-results/validateDebugScreenshotTest
+            build/reports/problems/problems-report.html
