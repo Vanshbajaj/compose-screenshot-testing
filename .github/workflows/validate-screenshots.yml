@@ -14,7 +14,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Setup Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
@@ -30,28 +30,29 @@ jobs:
           profile: 'Nexus 6'
           emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
           script: |
-            # POSIX-safe; reactivecircus waits for boot for us
             set -eu
-
-            echo "JAVA: $(java -version 2>&1 | head -n 1)"
-
-            # stop stale daemons (best-effort)
             ./gradlew --no-daemon --stop || true
 
-            # run only the user-requested task
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace
+            # optionally assemble/install before validate if your tests require installed APKs:
+            # ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
+            # ./gradlew :app:installDebug || true
+            # ./gradlew :app:installDebugAndroidTest || true
 
-            # list outputs (helpful for debugging)
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
+
             ls -la app/build/outputs/screenshotTest-results || true
-            ls -la app/build/test-results/validateDebugScreenshotTest || true
-            ls -la build/reports/problems || true
+            ls -la app/build/outputs/screenshotTest-results/preview/debug/diffs || true
 
-      - name: Upload screenshot artifacts (always)
+      - name: Upload screenshot test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-test-outputs
+          name: screenshotTest-results
           path: |
             app/build/outputs/screenshotTest-results
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
+
+      - name: Terminate emulator (best-effort)
+        if: always()
+        run: adb -s emulator-5554 emu kill || true
