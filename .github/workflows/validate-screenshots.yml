@@ -8,18 +8,11 @@ jobs:
     timeout-minutes: 90
 
     env:
-      # increase emulator shutdown wait if necessary
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-
-      - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
 
       - name: Set up Java 17 (Temurin)
         uses: actions/setup-java@v4
@@ -40,25 +33,51 @@ jobs:
       - name: Ensure Gradle wrapper is executable
         run: chmod +x ./gradlew
 
-      - name: Run Android Emulator and validate screenshots
+      - name: Run Android Emulator, install app, and validate screenshots
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 28
           profile: 'Nexus 6'
           emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
+          # IMPORTANT: we use POSIX shell compatible 'set -eu' to avoid dash not supporting `-o pipefail`.
           script: |
-            bash -lc "set -euo pipefail; \
-            echo \"JAVA: \$(java -version 2>&1 | head -n 1)\"; \
-            ./gradlew --no-daemon --stop || true; \
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true; \
-            echo '-- Listing outputs --'; \
-            ls -la build/reports/problems || true; \
-            ls -la app/build/test-results/validateDebugScreenshotTest || true; \
-            ls -la app/build/outputs/screenshotTest-results || true; \
-            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then \
-              echo '==== results.json ===='; \
-              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true; \
-            fi"
+            set -eu
+
+            echo "JAVA: $(java -version 2>&1 | head -n 1)"
+
+            # Stop any stale daemons (best-effort)
+            ./gradlew --no-daemon --stop || true
+
+            # Wait for adb/emulator to be ready (reactivecircus does this, but double-check)
+            adb wait-for-device
+            for i in $(seq 1 30); do
+              boot=$(adb -s emulator-5554 shell getprop sys.boot_completed || echo "")
+              if [ "$boot" = "1" ]; then
+                echo "Emulator fully booted."
+                break
+              fi
+              echo "Waiting for emulator boot ($i/30)..."
+              sleep 2
+            done
+
+            # Build and install debug & test apks so screenshots (if instrumentation-based) can run.
+            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
+
+            # Install debug and test APKs onto emulator (best-effort; continue even if install fails)
+            ./gradlew :app:installDebug || true
+            ./gradlew :app:installDebugAndroidTest || true
+
+            # Run the screenshot validation task (keep step running so we can upload artifacts)
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
+
+            echo "-- Listing outputs for artifact collection --"
+            ls -la build/reports/problems || true
+            ls -la app/build/test-results/validateDebugScreenshotTest || true
+            ls -la app/build/outputs/screenshotTest-results || true
+            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
+              echo "==== results.json ===="
+              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
+            fi
 
       - name: Upload problems report
         if: always()
@@ -81,12 +100,9 @@ jobs:
           name: screenshotTest-results
           path: |
             app/build/outputs/screenshotTest-results
-            app/build/test-results/validateDebugScreenshotTest
             app/src/debug/screenshotTest/reference
 
-      - name: Terminate emulator early (best-effort)
+      - name: Terminate emulator (best-effort)
         if: always()
         run: |
-          # best-effort kill of emulator process if still running
-          adb devices || true
           adb -s emulator-5554 emu kill || true
