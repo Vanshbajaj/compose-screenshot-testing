@@ -7,6 +7,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
 
+    env:
+      # increase emulator shutdown wait if necessary
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -41,22 +45,29 @@ jobs:
         with:
           api-level: 28
           profile: 'Nexus 6'
-          emulator-options: '-no-snapshot -no-audio -no-window'
+          emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
+          # Run everything under bash so `set -o pipefail` is available
           script: |
-            set -eu
+            bash -lc 'set -euo pipefail
             echo "JAVA: $(java -version 2>&1 | head -n 1)"
+
+            # stop any existing daemons to avoid stale state
             ./gradlew --no-daemon --stop || true
+
+            # run the specific screenshot validation task (keep failures non-fatal here so artifacts are uploaded)
             ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
 
-            echo "Listing outputs"
+            echo "-- Listing outputs (for artifact upload) --"
             ls -la build/reports/problems || true
             ls -la app/build/test-results/validateDebugScreenshotTest || true
-            ls -la app/build/reports/tests/validateDebugScreenshotTest || true
-            ls -la app/build/outputs || true
-      
+            ls -la app/build/outputs/screenshotTest-results || true
+            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
+              echo "==== results.json ===="
+              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
+            fi
+            '
 
-
-      - name: Upload problems report (if present)
+      - name: Upload problems report
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -70,18 +81,19 @@ jobs:
           name: validation-test-results-xml
           path: app/build/test-results/validateDebugScreenshotTest/
 
-      - name: Upload test HTML report
+      - name: Upload screenshot test outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-test-report-html
-          path: app/build/reports/tests/validateDebugScreenshotTest/
-
-      - name: Upload screenshot outputs and diffs (if produced)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: screenshot-outputs
+          name: screenshotTest-results
           path: |
-            app/build/outputs/
-            app/build/compose-screenshots || true
+            app/build/outputs/screenshotTest-results
+            app/build/test-results/validateDebugScreenshotTest
+            app/src/debug/screenshotTest/reference
+
+      - name: Terminate emulator early (best-effort)
+        if: always()
+        run: |
+          # best-effort kill of emulator process if still running
+          adb devices || true
+          adb -s emulator-5554 emu kill || true
