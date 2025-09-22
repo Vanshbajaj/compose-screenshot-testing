@@ -43,18 +43,17 @@ jobs:
           profile: 'Nexus 6'
           emulator-options: '-no-snapshot -no-audio -no-window'
           script: |
-            exec bash -l <<'BASH'
-            set -euo pipefail
+            set -eu
             echo "JAVA: $(java -version 2>&1 | head -n 1)"
             ./gradlew --no-daemon --stop || true
             ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
 
-            echo "Listing relevant outputs:"
+            echo "Listing outputs"
             ls -la build/reports/problems || true
             ls -la app/build/test-results/validateDebugScreenshotTest || true
             ls -la app/build/reports/tests/validateDebugScreenshotTest || true
             ls -la app/build/outputs || true
-            BASH
+      
 
 
       - name: Upload problems report (if present)
