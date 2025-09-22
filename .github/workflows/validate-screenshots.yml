@@ -8,11 +8,17 @@ jobs:
     timeout-minutes: 90
 
     env:
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 20
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
 
       - name: Set up Java 17 (Temurin)
         uses: actions/setup-java@v4
@@ -38,48 +44,32 @@ jobs:
         with:
           api-level: 28
           profile: 'Nexus 6'
+          # headless, deterministic flags
           emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
           script: |
+            # POSIX-compatible; avoid bash-specific features so the action doesn't split lines
             set -eu
 
             echo "JAVA: $(java -version 2>&1 | head -n 1)"
 
-            # Stop any stale daemons (best-effort)
+            # stop stale daemons (best-effort)
             ./gradlew --no-daemon --stop || true
 
-            # Wait for adb/emulator to be ready
-            adb wait-for-device
-            for i in $(seq 1 30); do
-              boot=$(adb -s emulator-5554 shell getprop sys.boot_completed || echo "")
-              if [ "$boot" = "1" ]; then
-                echo "Emulator fully booted."
-                break
-              fi
-              echo "Waiting for emulator boot ($i/30)..."
-              sleep 2
-            done
-
-            # Disable animations to speed up tests
-            echo "Disabling animations."
-            adb -s emulator-5554 shell input keyevent 82
-            adb -s emulator-5554 shell settings put global window_animation_scale 0.0
-            adb -s emulator-5554 shell settings put global transition_animation_scale 0.0
-            adb -s emulator-5554 shell settings put global animator_duration_scale 0.0
-
-            # Build and install debug & test apks
+            # reactivecircus/runner waits for emulator boot itself; build APKs now
             ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
 
-            # Install debug and test APKs onto emulator
+            # Install APKs onto emulator (best-effort)
             ./gradlew :app:installDebug || true
             ./gradlew :app:installDebugAndroidTest || true
 
-            # Run the screenshot validation task
+            # Run the screenshot validation task (allow failing but continue so artifacts upload)
             ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
 
             echo "-- Listing outputs for artifact collection --"
             ls -la build/reports/problems || true
             ls -la app/build/test-results/validateDebugScreenshotTest || true
             ls -la app/build/outputs/screenshotTest-results || true
+
             if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
               echo "==== results.json ===="
               cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
@@ -110,5 +100,4 @@ jobs:
 
       - name: Terminate emulator (best-effort)
         if: always()
-        run: |
-          adb -s emulator-5554 emu kill || true
+        run: adb -s emulator-5554 emu kill || true
