@@ -39,45 +39,32 @@ jobs:
           api-level: 28
           profile: 'Nexus 6'
           emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
-          # IMPORTANT: we use POSIX shell compatible 'set -eu' to avoid dash not supporting `-o pipefail`.
           script: |
-            set -eu
-
-            echo "JAVA: $(java -version 2>&1 | head -n 1)"
-
-            # Stop any stale daemons (best-effort)
-            ./gradlew --no-daemon --stop || true
-
-            # Wait for adb/emulator to be ready (reactivecircus does this, but double-check)
-            adb wait-for-device
-            for i in $(seq 1 30); do
-              boot=$(adb -s emulator-5554 shell getprop sys.boot_completed || echo "")
-              if [ "$boot" = "1" ]; then
-                echo "Emulator fully booted."
-                break
-              fi
-              echo "Waiting for emulator boot ($i/30)..."
-              sleep 2
-            done
-
-            # Build and install debug & test apks so screenshots (if instrumentation-based) can run.
-            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
-
-            # Install debug and test APKs onto emulator (best-effort; continue even if install fails)
-            ./gradlew :app:installDebug || true
-            ./gradlew :app:installDebugAndroidTest || true
-
-            # Run the screenshot validation task (keep step running so we can upload artifacts)
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
-
-            echo "-- Listing outputs for artifact collection --"
-            ls -la build/reports/problems || true
-            ls -la app/build/test-results/validateDebugScreenshotTest || true
-            ls -la app/build/outputs/screenshotTest-results || true
-            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
-              echo "==== results.json ===="
-              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
-            fi
+            bash -lc "set -eu; \
+            echo \"JAVA: \$(java -version 2>&1 | head -n 1)\"; \
+            ./gradlew --no-daemon --stop || true; \
+            adb wait-for-device; \
+            # loop in one shell invocation (escape $ as \$ inside YAML)
+            for i in \$(seq 1 30); do \
+              boot=\$(adb -s emulator-5554 shell getprop sys.boot_completed 2>/dev/null || echo); \
+              if [ \"\$boot\" = \"1\" ]; then \
+                echo 'Emulator fully booted.'; \
+                break; \
+              fi; \
+              echo \"Waiting for emulator boot (\$i/30)...\"; \
+              sleep 2; \
+            done; \
+            ./gradlew :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace; \
+            ./gradlew :app:installDebug || true; \
+            ./gradlew :app:installDebugAndroidTest || true; \
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true; \
+            echo '-- Listing outputs for artifact collection --'; \
+            ls -la build/reports/problems || true; \
+            ls -la app/build/test-results/validateDebugScreenshotTest || true; \
+            ls -la app/build/outputs/screenshotTest-results || true; \
+            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then \
+              echo '==== results.json ===='; cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true; \
+            fi"
 
       - name: Upload problems report
         if: always()
