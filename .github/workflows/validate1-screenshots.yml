@@ -1,0 +1,44 @@
+name: Android ABCD - all tests with screenshots
+
+on: [push, pull_request]
+
+jobs:
+  android-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Ensure gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Create Android Virtual Device and run all tests
+        uses: reactivecircus/android-emulator-runner@v2
+        id: testing
+        with:
+          api-level: 29
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: true
+          emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: |
+            ./gradlew testDebugUnitTest validateDebugScreenshotTest connectedDebugAndroidTest --stacktrace --info --no-daemon
+
+      - name: Upload screenshot test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshotTest-results
+          path: |
+            app/build/outputs/screenshotTest-results
+            app/build/test-results/validateDebugScreenshotTest
+            build/reports/problems/problems-report.html
