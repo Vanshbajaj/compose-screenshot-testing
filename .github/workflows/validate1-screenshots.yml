@@ -1,4 +1,4 @@
-name: androidTest
+name: Validate (with screenshots)
 
 on:
   pull_request:
