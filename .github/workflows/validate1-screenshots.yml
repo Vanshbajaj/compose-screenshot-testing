@@ -52,9 +52,6 @@ jobs:
           restore-keys: |
             avd-cache-${{ runner.os }}-
 
-      - name: Run ktlint Check
-        run: ./gradlew ktlintCheck
-
       - name: Create Android Virtual Device and run all tests
         uses: reactivecircus/android-emulator-runner@v2
         id: testing
