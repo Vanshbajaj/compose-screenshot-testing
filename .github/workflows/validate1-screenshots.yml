@@ -1,6 +1,9 @@
-name: Android CI - validate screenshots (force Java 17)
+name: Android CI - validate screenshot test (strict)
 
-on: [push, pull_request]
+# Trigger on push and PRs; change as needed.
+on:
+  push:
+  pull_request:
 
 jobs:
   validate-screenshots:
@@ -8,78 +11,95 @@ jobs:
     timeout-minutes: 90
 
     env:
+      # Give emulator some extra time before force-kill on termination
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Setup Java 17 (Temurin)
-        id: setup-java
+      - name: Set up Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
+          distribution: temurin
           java-version: '17'
 
-      - name: Expose Java info
-        run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          echo "java -version: $(java -version 2>&1 | head -n 1)"
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-cache-${{ runner.os }}-
 
-      - name: Ensure gradlew executable
+      - name: Ensure gradlew is executable
         run: chmod +x ./gradlew
 
-      # Make Gradle and its workers use the same Java 17 installation:
-      # Write a runtime gradle.properties that sets org.gradle.java.home to the action-provided JAVA_HOME.
-      - name: Force Gradle to use Java 17 for workers
-        run: |
-          echo "org.gradle.java.home=$JAVA_HOME" > "$GITHUB_WORKSPACE/gradle.properties.runtime"
-          echo "org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8" >> "$GITHUB_WORKSPACE/gradle.properties.runtime"
-        shell: bash
-
-      - name: Start emulator and run validateDebugScreenshotTest
+      - name: Start emulator, build, install and run validateDebugScreenshotTest
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
           profile: 'Nexus 6'
           force-avd-creation: true
           arch: x86_64
+          # recommended options for headless CI; keep -gpu swiftshader_indirect for deterministic rendering
           emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: false
+          # let the action disable animations for you (recommended for screenshot determinism)
+          disable-animations: true
           script: |
+            # strict mode: exit on errors
             set -eu
 
-            # make sure the gradle.properties.runtime is used by Gradle calls by passing -Dorg.gradle.project.user.props
-            # But easiest: pass -Dorg.gradle.java.home when invoking gradlew so all Gradle processes use Java 17.
             echo "Using JAVA_HOME=$JAVA_HOME"
+
+            # Make sure no stale daemons interfere
             ./gradlew --no-daemon --stop || true
 
-            # Optional: assemble/install if your validation requires the APK on device
-            # ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
-            # ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:installDebug || true
-            # ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:installDebugAndroidTest || true
+            # Force Gradle JVMs to use the runner's JAVA_HOME so worker JVMs also pick Java 17
+            GRADLE_JAVA_HOME_ARG="-Dorg.gradle.java.home=$JAVA_HOME"
 
-            # Run the validation task (force Gradle worker JVMs to use the same Java 17)
-            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:validateDebugScreenshotTest --no-daemon --info --stacktrace || true
+            # Build APKs (uncomment assemble lines only if your screenshot validation depends on installed APKs)
+            ./gradlew $GRADLE_JAVA_HOME_ARG :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
 
-            echo "-- Listing outputs for artifact collection --"
+            # Install debug + test apks (best-effort; 'install' tasks may fail if previously installed with different signature)
+            ./gradlew $GRADLE_JAVA_HOME_ARG :app:installDebug || true
+            ./gradlew $GRADLE_JAVA_HOME_ARG :app:installDebugAndroidTest || true
+
+            # Run only the screenshot validation task.
+            # This will FAIL the step if validation finds diffs (recommended).
+            ./gradlew $GRADLE_JAVA_HOME_ARG :app:validateDebugScreenshotTest --no-daemon --info --stacktrace
+
+            echo "-- Listing artifacts for upload --"
             ls -la app/build/outputs/screenshotTest-results || true
             ls -la app/build/test-results/validateDebugScreenshotTest || true
+            ls -la build/reports/problems || true
+
             if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
               echo "==== results.json ===="
               cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
             fi
 
-      - name: Upload screenshot test artifacts
+      - name: Upload screenshot outputs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: screenshotTest-results
           path: |
             app/build/outputs/screenshotTest-results
+            app/src/debug/screenshotTest/reference
+
+      - name: Upload validation test results (XML) and problem report (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: validation-reports
+          path: |
             app/build/test-results/validateDebugScreenshotTest
-            build/reports/problems/problems-report.html
+            build/reports/problems/
 
       - name: Terminate emulator (best-effort)
         if: always()
-        run: adb -s emulator-5554 emu kill || true
+        run: |
+          adb -s emulator-5554 emu kill || true
