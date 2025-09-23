@@ -1,31 +1,38 @@
-name: Android CI - validate screenshot test (strict)
+name: androidTest
 
-# Trigger on push and PRs; change as needed.
 on:
-  push:
   pull_request:
+    branches: ['*']
+  push:
+    branches: ['master', 'main']
 
 jobs:
-  validate-screenshots:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-
-    env:
-      # Give emulator some extra time before force-kill on termination
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v3
 
-      - name: Set up Java 17 (Temurin)
-        uses: actions/setup-java@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v3
         with:
+          java-version: 17
           distribution: temurin
-          java-version: '17'
+          cache: gradle
 
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
         with:
           path: |
             ~/.gradle/caches
@@ -34,72 +41,54 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Ensure gradlew is executable
-        run: chmod +x ./gradlew
+      - name: Cache AVD
+        uses: actions/cache@v3
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd
+            ~/.android/adbkey*
+          key: avd-cache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            avd-cache-${{ runner.os }}-
 
-      - name: Start emulator, build, install and run validateDebugScreenshotTest
+      - name: Run ktlint Check
+        run: ./gradlew ktlintCheck
+
+      - name: Create Android Virtual Device and run all tests
         uses: reactivecircus/android-emulator-runner@v2
+        id: testing
         with:
           api-level: 29
-          profile: 'Nexus 6'
-          force-avd-creation: true
+          target: google_apis
           arch: x86_64
-          # recommended options for headless CI; keep -gpu swiftshader_indirect for deterministic rendering
+          force-avd-creation: true
           emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          # let the action disable animations for you (recommended for screenshot determinism)
-          disable-animations: true
+          disable-animations: false
           script: |
-            # strict mode: exit on errors
-            set -eu
+            ./gradlew testDebugUnitTest validateDebugScreenshotTest connectedDebugAndroidTest --stacktrace
 
-            echo "Using JAVA_HOME=$JAVA_HOME"
+      - name: Upload Failing Test Report Log
+        if: steps.testing.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: |
+            app/emulator.log
+            app/build/outputs/androidTest-results/connected/* || true
 
-            # Make sure no stale daemons interfere
-            ./gradlew --no-daemon --stop || true
-
-            # Force Gradle JVMs to use the runner's JAVA_HOME so worker JVMs also pick Java 17
-            GRADLE_JAVA_HOME_ARG="-Dorg.gradle.java.home=$JAVA_HOME"
-
-            # Build APKs (uncomment assemble lines only if your screenshot validation depends on installed APKs)
-            ./gradlew $GRADLE_JAVA_HOME_ARG :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --info --stacktrace
-
-            # Install debug + test apks (best-effort; 'install' tasks may fail if previously installed with different signature)
-            ./gradlew $GRADLE_JAVA_HOME_ARG :app:installDebug || true
-            ./gradlew $GRADLE_JAVA_HOME_ARG :app:installDebugAndroidTest || true
-
-            # Run only the screenshot validation task.
-            # This will FAIL the step if validation finds diffs (recommended).
-            ./gradlew $GRADLE_JAVA_HOME_ARG :app:validateDebugScreenshotTest --no-daemon --info --stacktrace
-
-            echo "-- Listing artifacts for upload --"
-            ls -la app/build/outputs/screenshotTest-results || true
-            ls -la app/build/test-results/validateDebugScreenshotTest || true
-            ls -la build/reports/problems || true
-
-            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
-              echo "==== results.json ===="
-              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
-            fi
-
-      - name: Upload screenshot outputs (always)
+      - name: Upload build outputs (APKs)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshotTest-results
+          name: build-outputs
           path: |
-            app/build/outputs/screenshotTest-results
-            app/src/debug/screenshotTest/reference
+            ./app/build/outputs/**/*.apk
+            ./app/build/outputs/**/*.aab
 
-      - name: Upload validation test results (XML) and problem report (always)
+      - name: Upload build reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: validation-reports
-          path: |
-            app/build/test-results/validateDebugScreenshotTest
-            build/reports/problems/
-
-      - name: Terminate emulator (best-effort)
-        if: always()
-        run: |
-          adb -s emulator-5554 emu kill || true
+          name: build-reports
+          path: ./app/build/reports
