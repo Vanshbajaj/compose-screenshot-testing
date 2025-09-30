@@ -7,7 +7,7 @@ on:
       - '.github/workflows/**'
   push:
     branches:
-      - main
+      ["*"]
 
 jobs:
   validate-screenshot-tests:
