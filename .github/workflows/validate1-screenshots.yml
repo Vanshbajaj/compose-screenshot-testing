@@ -34,7 +34,7 @@ jobs:
       - name: Run screenshot validation
         run: |
           ./gradlew --stop || true
-          ./gradlew :app:updateDebugScreenshotTest --stacktrace
+          ./gradlew :app:validateDebugScreenshotTest --stacktrace
       - name: Upload screenshot artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -79,7 +79,7 @@ jobs:
       - name: Record screenshot baselines
         run: |
           ./gradlew --stop || true
-          ./gradlew :app:recordDebugScreenshotTest --stacktrace
+          ./gradlew :app:updateDebugScreenshotTest --stacktrace
       - name: Upload new baselines
         uses: actions/upload-artifact@v4
         with:
