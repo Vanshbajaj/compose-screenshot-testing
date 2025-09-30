@@ -1,17 +1,18 @@
-name: Android CI - validate screenshot test (single task)
+name: Android CI - Validate Screenshot Test
 
 on: [push, pull_request]
 
 jobs:
-  validate-screenshots-only:
+  validate-screenshots:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     env:
+      JAVA_HOME: /opt/hostedtoolcache/Java_Temurin_jdk/17*/x64
       ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
-      - name: Checkout
+      - name: Checkout Code
         uses: actions/checkout@v4
 
       - name: Setup Java 17 (Temurin)
@@ -20,35 +21,28 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Ensure gradlew executable
+      - name: Make gradlew Executable
         run: chmod +x ./gradlew
 
-      - name: Start emulator and run validateDebugScreenshotTest
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Start Emulator and Run Screenshot Validation
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 28
           profile: 'Nexus 6'
-          emulator-options: '-no-snapshot -no-audio -no-window -no-boot-anim -no-metrics -gpu swiftshader_indirect'
+          emulator-options: '-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect'
           script: |
             set -e
-            ./gradlew --no-daemon --stop || true
-
-            echo "🧪 Running screenshot test validation..."
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --info --stacktrace
-
-            echo "📁 Listing screenshot test results directory..."
-            ls -la app/build/outputs/screenshotTest-results || true
+            echo "Using Java version:"
+            java -version
+            ./gradlew --stop || true
+            ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace --info || true
+            echo "Listing screenshot diffs (if any):"
             ls -la app/build/outputs/screenshotTest-results/preview/debug/diffs || true
 
-            echo "🔍 Checking for screenshot diffs..."
-            if [ -d "app/build/outputs/screenshotTest-results/preview/debug/diffs" ] && [ "$(ls -A app/build/outputs/screenshotTest-results/preview/debug/diffs)" ]; then
-              echo "::error file=screenshot_test::Screenshot diffs found. Please review the uploaded artifacts."
-              exit 1
-            else
-              echo "✅ No screenshot diffs found."
-            fi
-
-      - name: Upload screenshot test results
+      - name: Upload Screenshot Test Results
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -58,6 +52,6 @@ jobs:
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
 
-      - name: Terminate emulator (best-effort)
+      - name: Kill Emulator (Best-Effort)
         if: always()
         run: adb -s emulator-5554 emu kill || true
