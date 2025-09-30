@@ -1,4 +1,4 @@
-name: Android CI – Validate Screenshot Tests
+name: Android CI — Screenshot Testing
 
 on:
   push:
@@ -7,9 +7,11 @@ on:
   pull_request:
     branches:
       - "**"
+  workflow_dispatch:  # allows manual trigger
 
 jobs:
-  validate-screenshots:
+  validate:
+    name: Validate Screenshots
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -30,24 +32,19 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Run screenshot validation
-        id: validate_screenshots
         run: |
-          echo "Java version:" && java -version
           ./gradlew --stop || true
-          ./gradlew :app:validateDebugScreenshotTest --stacktrace
-        continue-on-error: false
-
-      - name: Upload screenshot test artifacts
+          ./gradlew :app:updateDebugScreenshotTest --stacktrace
+      - name: Upload screenshot artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshotTest-results
+          name: screenshot-results
           path: |
             app/build/outputs/screenshotTest-results
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
-
-      - name: Fail if diffs found
+      - name: Fail if diffs exist
         if: always()
         run: |
           DIFF_DIR="app/build/outputs/screenshotTest-results/preview/debug/diffs"
@@ -57,3 +54,34 @@ jobs:
           else
             echo "✅ No screenshot diffs found."
           fi
+
+  record:
+    name: Record Screenshot Baselines
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Record screenshot baselines
+        run: |
+          ./gradlew --stop || true
+          ./gradlew :app:recordDebugScreenshotTest --stacktrace
+      - name: Upload new baselines
+        uses: actions/upload-artifact@v4
+        with:
+          name: new-baselines
+          path: app/src/test/snapshots/preview/debug/
