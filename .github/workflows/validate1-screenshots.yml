@@ -29,7 +29,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       # Check for baselines in the actual reference path used by your plugin
       - name: Check for screenshot baselines
