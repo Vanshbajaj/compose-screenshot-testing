@@ -6,6 +6,6 @@ import com.example.composescreenshotofficial.SampleScreen
 
 @Preview
 @Composable
-private fun Test() {
+fun SampleScreenPreview() {
     SampleScreen()
 }
