@@ -31,10 +31,32 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
+      # Check for baselines in the actual reference path used by your plugin
+      - name: Check for screenshot baselines
+        id: baseline_check
+        run: |
+          SNAPSHOT_DIR="app/src/debug/screenshotTest/reference"
+          if [ -d "$SNAPSHOT_DIR" ] && [ "$(ls -A "$SNAPSHOT_DIR")" ]; then
+            echo "found=true" >> $GITHUB_OUTPUT
+            echo "Baselines found in $SNAPSHOT_DIR"
+          else
+            echo "found=false" >> $GITHUB_OUTPUT
+            echo "No screenshot baselines found in $SNAPSHOT_DIR"
+          fi
+
       - name: Run screenshot validation
+        if: steps.baseline_check.outputs.found == 'true'
         run: |
           ./gradlew --stop || true
           ./gradlew :app:validateDebugScreenshotTest --stacktrace
+
+      - name: Skip screenshot validation (no baselines)
+        if: steps.baseline_check.outputs.found == 'false'
+        run: |
+          echo "⚠️ No screenshot baselines present. Skipping validateDebugScreenshotTest."
+          echo "To create baselines run locally: ./gradlew :app:updateDebugScreenshotTest"
+          echo "Commit files from app/src/debug/screenshotTest/reference/ to the repo (or use the record job to generate them)."
+
       - name: Upload screenshot artifacts
         if: always()
         uses: actions/upload-artifact@v4
@@ -44,8 +66,9 @@ jobs:
             app/build/outputs/screenshotTest-results
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
+
       - name: Fail if diffs exist
-        if: always()
+        if: always() && steps.baseline_check.outputs.found == 'true'
         run: |
           DIFF_DIR="app/build/outputs/screenshotTest-results/preview/debug/diffs"
           if [ -d "$DIFF_DIR" ] && [ "$(ls -A "$DIFF_DIR")" ]; then
@@ -80,8 +103,9 @@ jobs:
         run: |
           ./gradlew --stop || true
           ./gradlew :app:updateDebugScreenshotTest --stacktrace
+
       - name: Upload new baselines
         uses: actions/upload-artifact@v4
         with:
           name: new-baselines
-          path: app/src/test/snapshots/preview/debug/
+          path: app/src/debug/screenshotTest/reference/

@@ -3,7 +3,6 @@ import androidx.compose.ui.tooling.preview.Preview
 import com.example.composescreenshotofficial.SampleScreen
 
 
-
 @Preview
 @Composable
 fun SampleScreenPreview() {
