@@ -7,7 +7,10 @@ on:
   pull_request:
     branches:
       - "**"
-  workflow_dispatch:  # allows manual trigger
+  workflow_dispatch:
+
+env:
+  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2g"
 
 jobs:
   validate:
@@ -18,6 +21,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Java 17 (Temurin)
         uses: actions/setup-java@v4
@@ -31,17 +36,17 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      # Check for baselines in the actual reference path used by your plugin
       - name: Check for screenshot baselines
         id: baseline_check
         run: |
           SNAPSHOT_DIR="app/src/debug/screenshotTest/reference"
+          echo "Looking for baselines in: $SNAPSHOT_DIR"
           if [ -d "$SNAPSHOT_DIR" ] && [ "$(ls -A "$SNAPSHOT_DIR")" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
-            echo "Baselines found in $SNAPSHOT_DIR"
+            echo "✅ Baselines found"
           else
             echo "found=false" >> $GITHUB_OUTPUT
-            echo "No screenshot baselines found in $SNAPSHOT_DIR"
+            echo "❌ No baselines found"
           fi
 
       - name: Run screenshot validation
@@ -50,14 +55,15 @@ jobs:
           ./gradlew --stop || true
           ./gradlew :app:validateDebugScreenshotTest --stacktrace
 
-      - name: Skip screenshot validation (no baselines)
+      - name: Fail due to missing baselines
         if: steps.baseline_check.outputs.found == 'false'
         run: |
-          echo "⚠️ No screenshot baselines present. Skipping validateDebugScreenshotTest."
-          echo "To create baselines run locally: ./gradlew :app:updateDebugScreenshotTest"
-          echo "Commit files from app/src/debug/screenshotTest/reference/ to the repo (or use the record job to generate them)."
+          echo "::error::Screenshot reference images missing in app/src/debug/screenshotTest/reference."
+          echo "Generate them locally with: ./gradlew :app:updateDebugScreenshotTest"
+          echo "Then commit the files from app/src/debug/screenshotTest/reference/ to the repo and re-run this workflow."
+          exit 1
 
-      - name: Upload screenshot artifacts
+      - name: Upload screenshot artifacts (renders, diffs, test results)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -73,39 +79,8 @@ jobs:
           DIFF_DIR="app/build/outputs/screenshotTest-results/preview/debug/diffs"
           if [ -d "$DIFF_DIR" ] && [ "$(ls -A "$DIFF_DIR")" ]; then
             echo "::error file=screenshot_test::Screenshot diffs found in $DIFF_DIR"
+            echo "Download the 'screenshot-results' artifact from the failing workflow to inspect diffs and renderings."
             exit 1
           else
             echo "✅ No screenshot diffs found."
           fi
-
-  record:
-    name: Record Screenshot Baselines
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Java 17 (Temurin)
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
-
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Record screenshot baselines
-        run: |
-          ./gradlew --stop || true
-          ./gradlew :app:updateDebugScreenshotTest --stacktrace
-
-      - name: Upload new baselines
-        uses: actions/upload-artifact@v4
-        with:
-          name: new-baselines
-          path: app/src/debug/screenshotTest/reference/
