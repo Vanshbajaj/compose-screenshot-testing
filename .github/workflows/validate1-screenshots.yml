@@ -1,57 +1,45 @@
-name: Android CI - Validate Screenshot Test
+name: Validate Compose Screenshot Tests
 
-on: [push, pull_request]
+on:
+  pull_request:
+    paths:
+      - 'app/**'
+      - '.github/workflows/**'
+  push:
+    branches:
+      - main
 
 jobs:
-  validate-screenshots:
+  validate-screenshot-tests:
+    name: Validate Screenshot Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    env:
-      JAVA_HOME: /opt/hostedtoolcache/Java_Temurin_jdk/17*/x64
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
+    timeout-minutes: 30
 
     steps:
-      - name: Checkout Code
+      - name: 📥 Checkout Code
         uses: actions/checkout@v4
 
-      - name: Setup Java 17 (Temurin)
+      - name: ☕ Setup Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
+          distribution: temurin
+          java-version: 17
 
-      - name: Make gradlew Executable
+      - name: 🛠 Make Gradle Executable
         run: chmod +x ./gradlew
 
-      - name: Setup Android SDK
+      - name: 📦 Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Start Emulator and Run Screenshot Validation
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 28
-          profile: 'Nexus 6'
-          emulator-options: '-no-window -no-audio -no-boot-anim -gpu swiftshader_indirect'
-          script: |
-            set -e
-            echo "Using Java version:"
-            java -version
-            ./gradlew --stop || true
-            ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace --info || true
-            echo "Listing screenshot diffs (if any):"
-            ls -la app/build/outputs/screenshotTest-results/preview/debug/diffs || true
+      - name: 🧪 Validate Screenshot Tests
+        run: |
+          ./gradlew --stop
+          ./gradlew :app:validateDebugScreenshotTest --stacktrace --no-daemon
+          echo "If this fails due to diffs, update your baselines."
 
-      - name: Upload Screenshot Test Results
-        if: always()
+      - name: 📤 Upload Screenshot Diffs (if any)
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshotTest-results
-          path: |
-            app/build/outputs/screenshotTest-results
-            app/build/test-results/validateDebugScreenshotTest
-            build/reports/problems/problems-report.html
-
-      - name: Kill Emulator (Best-Effort)
-        if: always()
-        run: adb -s emulator-5554 emu kill || true
+          name: screenshot-diffs
+          path: app/build/outputs/screenshotTest-results/preview/debug/diffs
