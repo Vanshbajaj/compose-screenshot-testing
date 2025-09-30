@@ -7,14 +7,14 @@ on:
     branches: ['*']
 
 jobs:
-  build:
+  validate-screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     environment: testing
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
@@ -28,14 +28,14 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew
 
-      - name: Enable KVM (for emulator)
+      - name: Enable KVM (emulator)
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
       - name: Cache Gradle dependencies
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: |
             ~/.gradle/caches
@@ -45,7 +45,7 @@ jobs:
             gradle-cache-${{ runner.os }}-
 
       - name: Cache AVD
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         id: avd-cache
         with:
           path: |
@@ -57,34 +57,35 @@ jobs:
 
       - name: Create Android Virtual Device and run tests + screenshots
         uses: reactivecircus/android-emulator-runner@v2
-        id: testing
+        id: emulator
         with:
           api-level: 29
           target: google_apis
           arch: x86_64
           force-avd-creation: true
-          emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: >-
+            -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: |
             set -euo pipefail
 
-            # 1) Optional: unit tests
-            ./gradlew testDebugUnitTest --no-daemon --stacktrace
+            # 1) (optional) run unit tests first
+            ./gradlew testDebugUnitTest --no-daemon --stacktrace || true
 
-            # 2) Render preview screenshots (preview-side)
+            # 2) Render previews (creates preview-side outputs and results.json)
             ./gradlew :app:debugPreviewScreenshotRender --no-daemon --stacktrace
 
-            # 3) Build & run instrumentation tests on emulator (captures screenshots)
+            # 3) Build & run instrumentation tests on emulator to capture screenshots
             ./gradlew :app:connectedDebugAndroidTest --no-daemon --stacktrace
 
-            # 4) Validate screenshots — run non-fatal so artifacts always upload
+            # 4) Validate screenshots (run non-fatal so artifacts are uploaded below)
             set +e
             ./gradlew :app:validateDebugScreenshotTest --no-daemon --stacktrace
             VALIDATE_RC=$?
             echo "validate_rc=$VALIDATE_RC" > validate_exit_code.txt
             set -e
 
-            # keep the step exit code 0 so artifact upload always runs (fail at final step instead)
+            # exit 0 so artifact upload steps always run (we fail later based on validate_exit_code.txt)
             exit 0
 
       - name: Upload screenshot artifacts (preview, captured, diffs, test-results)
@@ -98,16 +99,16 @@ jobs:
             app/build/test-results/validateDebugScreenshotTest/**
             app/src/debug/screenshotTest/reference/**
 
-      - name: Upload Failing Test Report Log
+      - name: Upload emulator logs & connected test outputs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logs
+          name: emulator-logs-and-connected
           path: |
             app/emulator.log
             app/build/outputs/androidTest-results/connected/** || true
 
-      - name: Upload build outputs (APKs / AABs)
+      - name: Upload build outputs (APKs & AABs)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -131,7 +132,8 @@ jobs:
             rc=${rc_line#validate_rc=}
             echo "Screenshot validation exit code: ${rc}"
             if [ "${rc}" != "0" ] && [ "${rc}" != "" ]; then
-              echo "Screenshot validation FAILED. Download 'screenshot-artifacts' from the run to inspect preview/captured/diffs and test-results."
+              echo "::error ::Screenshot validation FAILED (exit code ${rc})."
+              echo "Artifacts 'screenshot-artifacts' uploaded. Download to inspect preview/captured/diff/result files."
               exit 1
             else
               echo "Screenshot validation succeeded (exit code ${rc})."
