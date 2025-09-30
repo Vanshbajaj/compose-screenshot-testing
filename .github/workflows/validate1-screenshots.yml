@@ -1,45 +1,59 @@
-name: Validate Compose Screenshot Tests
+name: Android CI – Validate Screenshot Tests
 
 on:
-  pull_request:
-    paths:
-      - 'app/**'
-      - '.github/workflows/**'
   push:
     branches:
-      ["*"]
+      - main
+  pull_request:
+    branches:
+      - "**"
 
 jobs:
-  validate-screenshot-tests:
-    name: Validate Screenshot Tests
+  validate-screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
-      - name: 📥 Checkout Code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: ☕ Setup Java 17 (Temurin)
+      - name: Setup Java 17 (Temurin)
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: 🛠 Make Gradle Executable
+      - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: 📦 Setup Android SDK
+      - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: 🧪 Validate Screenshot Tests
+      - name: Run screenshot validation
+        id: validate_screenshots
         run: |
-          ./gradlew --stop
-          ./gradlew :app:validateDebugScreenshotTest --stacktrace --no-daemon
-          echo "If this fails due to diffs, update your baselines."
+          echo "Java version:" && java -version
+          ./gradlew --stop || true
+          ./gradlew :app:validateDebugScreenshotTest --stacktrace
+        continue-on-error: false
 
-      - name: 📤 Upload Screenshot Diffs (if any)
-        if: failure()
+      - name: Upload screenshot test artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-diffs
-          path: app/build/outputs/screenshotTest-results/preview/debug/diffs
+          name: screenshotTest-results
+          path: |
+            app/build/outputs/screenshotTest-results
+            app/build/test-results/validateDebugScreenshotTest
+            build/reports/problems/problems-report.html
+
+      - name: Fail if diffs found
+        if: always()
+        run: |
+          DIFF_DIR="app/build/outputs/screenshotTest-results/preview/debug/diffs"
+          if [ -d "$DIFF_DIR" ] && [ "$(ls -A "$DIFF_DIR")" ]; then
+            echo "::error file=screenshot_test::Screenshot diffs found in $DIFF_DIR"
+            exit 1
+          else
+            echo "✅ No screenshot diffs found."
+          fi
