@@ -3,7 +3,7 @@ name: Android CI – Validate Screenshot Tests
 on:
   push:
     branches:
-      - main
+      - "**"
   pull_request:
     branches:
       - "**"
