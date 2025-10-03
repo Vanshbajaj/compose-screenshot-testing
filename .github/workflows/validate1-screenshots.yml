@@ -1,36 +1,36 @@
-name: Android CI — Screenshot Testing
+name: Android CI - validate screenshots (force Java 17)
 
-on:
-  push:
-    branches:
-      - "**"
-  pull_request:
-    branches:
-      - "**"
-  workflow_dispatch:
-
-env:
-  GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2g"
+on: [push, pull_request, workflow_dispatch]
 
 jobs:
-  validate:
+  validate-screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
+
+    env:
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
+      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2g"
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      - name: Setup Java 17 (Temurin)
+        id: setup-java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Make gradlew executable
+      - name: Expose Java info
+        run: |
+          echo "JAVA_HOME=$JAVA_HOME"
+          java -version
+
+      - name: Ensure gradlew executable
         run: chmod +x ./gradlew
 
-      # Cache Gradle + wrapper; invalidate the cache when libs.versions.toml changes
+      # Optional: cache Gradle and wrapper, keyed by libs.versions.toml
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -41,63 +41,48 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # Optional: clear stale Kotlin cache to avoid metadata mismatch
+      - name: Remove Kotlin stdlib cache
+        run: rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
+
+      - name: Start emulator and run validateDebugScreenshotTest
+        uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 33
-          target: default
-          build-tools: 33.0.2
+          api-level: 29
+          profile: Nexus 6
+          force-avd-creation: true
+          arch: x86_64
+          emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: |
+            set -eu
+            echo "Using JAVA_HOME=$JAVA_HOME"
 
-      # (Optional) Remove previously cached Kotlin stdlib artifacts — useful for first run after version bump
-      - name: Remove Kotlin stdlib cache (optional)
-        run: |
-          rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
+            ./gradlew --no-daemon --stop || true
 
-      # Determine whether baseline screenshots are present in the repo
-      - name: Check for screenshot baselines
-        id: baseline_check
-        run: |
-          SNAPSHOT_DIR="app/src/main/screenshotTest/baseline"
-          if [ -d "$SNAPSHOT_DIR" ] && [ "$(ls -A "$SNAPSHOT_DIR")" ]; then
-            echo "found=true" >> $GITHUB_OUTPUT
-          else
-            echo "found=false" >> $GITHUB_OUTPUT
-          fi
+            # Run the screenshot validation (force Gradle to use Java 17, refresh deps for Kotlin bump)
+            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" \
+              :app:validateDebugScreenshotTest \
+              --no-daemon --stacktrace --info --refresh-dependencies
 
-      # Run screenshot validation when baselines are present; refresh dependencies to pick up updated Kotlin stdlib/plugin
-      - name: Run screenshot validation
-        if: steps.baseline_check.outputs.found == 'true'
-        run: |
-          ./gradlew :app:validateDebugScreenshotTest --stacktrace --refresh-dependencies
+            echo "-- Listing outputs for artifact collection --"
+            ls -la app/build/outputs/screenshotTest-results || true
+            ls -la app/build/test-results/validateDebugScreenshotTest || true
+            if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
+              echo "==== results.json ===="
+              cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
+            fi
 
-      # If no baselines exist, fail early with guidance (original workflows sometimes updated instead)
-      - name: Fail due to missing baselines
-        if: steps.baseline_check.outputs.found == 'false'
-        run: |
-          echo "Baseline screenshots not found in app/src/main/screenshotTest/baseline"
-          echo "Generate them locally with: ./gradlew :app:updateDebugScreenshotTest"
-          exit 1
-
-      # Upload screenshot renders, diffs and test results so they can be inspected on failure or success
-      - name: Upload screenshot artifacts (renders, diffs, test results)
+      - name: Upload screenshot test artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshot-results
+          name: screenshotTest-results
           path: |
             app/build/outputs/screenshotTest-results
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
 
-      # Fail the job if any diffs were produced by the validation run
-      - name: Fail if diffs exist
-        if: always() && steps.baseline_check.outputs.found == 'true'
-        run: |
-          DIFF_DIR="app/build/outputs/screenshotTest-results/preview/debug/diffs"
-          if [ -d "$DIFF_DIR" ] && [ "$(ls -A "$DIFF_DIR")" ]; then
-            echo "::error file=screenshot_test::Screenshot diffs found in $DIFF_DIR"
-            echo "Download the 'screenshot-results' artifact from the failing workflow to inspect diffs and renderings."
-            exit 1
-          else
-            echo "✅ No screenshot diffs found."
-          fi
+      - name: Terminate emulator (best-effort)
+        if: always()
+        run: adb -s emulator-5554 emu kill || true
