@@ -60,10 +60,9 @@ jobs:
 
             ./gradlew --no-daemon --stop || true
 
-            # Run the screenshot validation (force Gradle to use Java 17, refresh deps for Kotlin bump)
-            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" \
-              :app:validateDebugScreenshotTest \
-              --no-daemon --stacktrace --info --refresh-dependencies
+            # Run the screenshot validation in a single line to avoid backslash problems.
+            # Force Gradle worker JVMs to use Java 17 and refresh dependencies.
+            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:validateDebugScreenshotTest --no-daemon --info --stacktrace --refresh-dependencies || true
 
             echo "-- Listing outputs for artifact collection --"
             ls -la app/build/outputs/screenshotTest-results || true
@@ -72,6 +71,7 @@ jobs:
               echo "==== results.json ===="
               cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
             fi
+
 
       - name: Upload screenshot test artifacts
         if: always()
