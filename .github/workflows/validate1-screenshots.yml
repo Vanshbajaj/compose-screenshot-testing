@@ -1,36 +1,39 @@
-name: Android CI - validate screenshots (force Java 17)
+name: Android CI - Validate Screenshots (video capture & full artifacts)
 
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+  workflow_dispatch:
 
 jobs:
   validate-screenshots:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
 
     env:
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
       GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2g"
+      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Java 17 (Temurin)
-        id: setup-java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
-      - name: Expose Java info
+      - name: Print java info
         run: |
           echo "JAVA_HOME=$JAVA_HOME"
           java -version
 
-      - name: Ensure gradlew executable
+      - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # Optional: cache Gradle and wrapper, keyed by libs.versions.toml
       - name: Cache Gradle packages
         uses: actions/cache@v4
         with:
@@ -41,11 +44,7 @@ jobs:
           restore-keys: |
             gradle-cache-${{ runner.os }}-
 
-      # Optional: clear stale Kotlin cache to avoid metadata mismatch
-      - name: Remove Kotlin stdlib cache
-        run: rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
-
-      - name: Start emulator and run validateDebugScreenshotTest
+      - name: Start emulator, record video, run validate (generate baselines if missing)
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 29
@@ -57,30 +56,97 @@ jobs:
           script: |
             set -eu
             echo "Using JAVA_HOME=$JAVA_HOME"
-
             ./gradlew --no-daemon --stop || true
 
-            # Run the screenshot validation in a single line to avoid backslash problems.
-            # Force Gradle worker JVMs to use Java 17 and refresh dependencies.
-            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" :app:validateDebugScreenshotTest --no-daemon --info --stacktrace --refresh-dependencies || true
+            # remote/host paths
+            REMOTE_VIDEO="/sdcard/screenshot_test_run.mp4"
+            LOCAL_VIDEO="app/build/outputs/screenshotTest-results/video.mp4"
+            mkdir -p "$(dirname "$LOCAL_VIDEO")"
 
+            # Start screenrecord on device in background and capture PID
+            # Adjust --size and --bit-rate to control file size (lower = smaller)
+            echo "Starting remote screenrecord..."
+            PID=$(adb -s emulator-5554 shell "sh -c 'screenrecord --size 720x1280 --bit-rate 4000000 $REMOTE_VIDEO > /dev/null 2>&1 & echo \$!'" | tr -d '\r' || true)
+            echo "remote screenrecord pid: ${PID}"
+
+            # Run validate; capture exit code
+            VALIDATE_EXIT=0
+            ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" \
+              :app:validateDebugScreenshotTest \
+              --no-daemon --info --stacktrace --refresh-dependencies || VALIDATE_EXIT=$?
+
+            echo "validateDebugScreenshotTest exit code: ${VALIDATE_EXIT}"
+
+            # If validation failed, generate baselines if none exist
+            REF_DIR="app/src/screenshotTestDebug/reference"
+            if [ "${VALIDATE_EXIT}" != "0" ]; then
+              echo "Validation failed. Checking for reference images at $REF_DIR"
+              if [ ! -d "$REF_DIR" ] || [ -z "$(ls -A "$REF_DIR" 2>/dev/null || true)" ]; then
+                echo "No reference images found. Generating baselines with :app:updateDebugScreenshotTest ..."
+                ./gradlew -Dorg.gradle.java.home="$JAVA_HOME" \
+                  :app:updateDebugScreenshotTest \
+                  --no-daemon --info --stacktrace --refresh-dependencies || true
+
+                echo "Baseline generation complete. Workflow will upload artifacts; please download and commit baselines."
+                # Make sure we still capture video below, then fail to force human commit
+                GENERATED_BASELINES=1
+              else
+                echo "Reference images present but validation failed; preserving exit code to fail run."
+                GENERATED_BASELINES=0
+              fi
+            else
+              GENERATED_BASELINES=0
+            fi
+
+            # Stop screenrecord if running (kill remote PID if we have it; fallback to pkill)
+            if [ -n "${PID}" ] && [ "${PID}" != "null" ]; then
+              echo "Stopping remote screenrecord pid ${PID} ..."
+              adb -s emulator-5554 shell "kill ${PID}" || adb -s emulator-5554 shell "pkill -f screenrecord" || true
+              sleep 1
+            else
+              echo "No PID captured for screenrecord; try pkill if present"
+              adb -s emulator-5554 shell "pkill -f screenrecord" || true
+            fi
+
+            # Pull the video (best-effort)
+            echo "Pulling video from device: $REMOTE_VIDEO -> $LOCAL_VIDEO"
+            adb -s emulator-5554 pull "$REMOTE_VIDEO" "$LOCAL_VIDEO" || true
+            # Remove remote copy to keep emulator clean
+            adb -s emulator-5554 shell "rm -f $REMOTE_VIDEO" || true
+
+            # List and print small previews
             echo "-- Listing outputs for artifact collection --"
             ls -la app/build/outputs/screenshotTest-results || true
+            ls -la app/src/screenshotTestDebug/reference || true
+            ls -la app/build/reports/screenshotTest/preview/debug || true
             ls -la app/build/test-results/validateDebugScreenshotTest || true
+
             if [ -f app/build/outputs/screenshotTest-results/preview/debug/results.json ]; then
               echo "==== results.json ===="
               cat app/build/outputs/screenshotTest-results/preview/debug/results.json || true
             fi
 
+            # If we generated baselines, fail to force commit; otherwise preserve validation exit code
+            if [ "${GENERATED_BASELINES}" = "1" ]; then
+              echo "Generated baselines on runner. Download artifacts and commit the generated baselines to repo."
+              exit 1
+            fi
 
-      - name: Upload screenshot test artifacts
+            if [ "${VALIDATE_EXIT}" != "0" ]; then
+              echo "Validation failed (exit ${VALIDATE_EXIT}). See reports/diffs in artifacts."
+              exit ${VALIDATE_EXIT}
+            fi
+
+      - name: Upload screenshot + video artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshotTest-results
+          name: screenshot-full-views
           path: |
+            app/src/screenshotTestDebug/reference
             app/build/outputs/screenshotTest-results
             app/build/test-results/validateDebugScreenshotTest
+            app/build/reports/screenshotTest/preview/debug
             build/reports/problems/problems-report.html
 
       - name: Terminate emulator (best-effort)
