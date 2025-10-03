@@ -1,65 +1,82 @@
-name: Android CI - Validate Screenshots (video capture & full artifacts) - Fixed
-
+name: androidTest
 on:
-  push:
-    branches: ["**"]
   pull_request:
-    branches: ["**"]
-  workflow_dispatch:
+    branches: [ '*' ]
+  push:
+    branches: [ '*' ]
 
 jobs:
-  validate-screenshots:
+  build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
-
     env:
-      GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx2g"
-      ANDROID_EMULATOR_WAIT_TIME_BEFORE_KILL: 60
 
+    timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      - name: Setup Java 17 (Temurin)
-        uses: actions/setup-java@v4
+      - name: set up JDK 17
+        uses: actions/setup-java@v3
         with:
-          distribution: temurin
           java-version: 17
+          distribution: temurin
+          cache: gradle
 
-      - name: Print java info
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Enable KVM
         run: |
-          echo "JAVA_HOME=$JAVA_HOME"
-          java -version
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.gradle/caches
+          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/*.gradle*') }}
+          restore-keys: gradle-cache-${{ runner.os }}-
 
-      - name: Make gradlew executable
-        run: chmod +x ./gradlew
-
-      - name: Cache Gradle packages
-        uses: actions/cache@v4
+      - name: Cache AVD
+        uses: actions/cache@v3
+        id: avd-cache
         with:
           path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/gradle/libs.versions.toml') }}
-          restore-keys: |
-            gradle-cache-${{ runner.os }}-
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-cache-${{ runner.os }}-${{ hashFiles('**/*.avd') }}
+          restore-keys: avd-cache-${{ runner.os }}-
 
-      - name: Start emulator, record video, run validate (generate baselines if missing)
+
+
+      - name: Create Android Virtual Device and run all tests
         uses: reactivecircus/android-emulator-runner@v2
+        id: testing
         with:
           api-level: 29
-          profile: Nexus 6
-          force-avd-creation: true
+          target: google_apis
           arch: x86_64
+          force-avd-creation: true
           emulator-options: -wipe-data -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: false
           script: |
-            set -eu
-            echo "Using JAVA_HOME=$JAVA_HOME"
-            ./gradlew --no-daemon --stop || true
+            ./gradlew testDebugUnitTest validateDebugScreenshotTest connectedDebugAndroidTest --stacktrace
+      - name: Upload Failing Test Report Log
+        if: steps.testing.outcome != 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs
+          path: app/emulator.log
 
-            # Wait for adb device/emulator
-            echo "Waiting for emulator device..."
-            adb wait-for-device
+      - name: Upload build outputs (APKs)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-outputs
+          path: ./app/build/outputs
 
-            # Wait for the device to signal boot completion (timeout
+      - name: Upload build reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          path: ./app/build/reports
