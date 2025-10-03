@@ -14,17 +14,14 @@ env:
 
 jobs:
   validate:
-    name: Validate Screenshots
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Setup Java 17 (Temurin)
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -33,36 +30,55 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      # Cache Gradle + wrapper; invalidate the cache when libs.versions.toml changes
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-cache-${{ runner.os }}-${{ hashFiles('**/gradle/libs.versions.toml') }}
+          restore-keys: |
+            gradle-cache-${{ runner.os }}-
 
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          api-level: 33
+          target: default
+          build-tools: 33.0.2
+
+      # (Optional) Remove previously cached Kotlin stdlib artifacts — useful for first run after version bump
+      - name: Remove Kotlin stdlib cache (optional)
+        run: |
+          rm -rf ~/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlin || true
+
+      # Determine whether baseline screenshots are present in the repo
       - name: Check for screenshot baselines
         id: baseline_check
         run: |
-          SNAPSHOT_DIR="app/src/debug/screenshotTest/reference"
-          echo "Looking for baselines in: $SNAPSHOT_DIR"
+          SNAPSHOT_DIR="app/src/main/screenshotTest/baseline"
           if [ -d "$SNAPSHOT_DIR" ] && [ "$(ls -A "$SNAPSHOT_DIR")" ]; then
             echo "found=true" >> $GITHUB_OUTPUT
-            echo "✅ Baselines found"
           else
             echo "found=false" >> $GITHUB_OUTPUT
-            echo "❌ No baselines found"
           fi
 
+      # Run screenshot validation when baselines are present; refresh dependencies to pick up updated Kotlin stdlib/plugin
       - name: Run screenshot validation
         if: steps.baseline_check.outputs.found == 'true'
         run: |
-          ./gradlew --stop || true
-          ./gradlew :app:validateDebugScreenshotTest --stacktrace
+          ./gradlew :app:validateDebugScreenshotTest --stacktrace --refresh-dependencies
 
+      # If no baselines exist, fail early with guidance (original workflows sometimes updated instead)
       - name: Fail due to missing baselines
         if: steps.baseline_check.outputs.found == 'false'
         run: |
-          echo "::error::Screenshot reference images missing in app/src/debug/screenshotTest/reference."
+          echo "Baseline screenshots not found in app/src/main/screenshotTest/baseline"
           echo "Generate them locally with: ./gradlew :app:updateDebugScreenshotTest"
-          echo "Then commit the files from app/src/debug/screenshotTest/reference/ to the repo and re-run this workflow."
           exit 1
 
+      # Upload screenshot renders, diffs and test results so they can be inspected on failure or success
       - name: Upload screenshot artifacts (renders, diffs, test results)
         if: always()
         uses: actions/upload-artifact@v4
@@ -73,6 +89,7 @@ jobs:
             app/build/test-results/validateDebugScreenshotTest
             build/reports/problems/problems-report.html
 
+      # Fail the job if any diffs were produced by the validation run
       - name: Fail if diffs exist
         if: always() && steps.baseline_check.outputs.found == 'true'
         run: |
