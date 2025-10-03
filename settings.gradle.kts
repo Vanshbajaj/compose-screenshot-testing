@@ -6,7 +6,7 @@ pluginManagement {
     }
     plugins {
         id("com.android.application") version "8.11.2"
-        id("org.jetbrains.kotlin.android") version "2.1.20"
+        id("org.jetbrains.kotlin.android") version "1.9.23"
         id("com.android.compose.screenshot") version "0.0.1-alpha11"
     }
 }

@@ -1,12 +1,12 @@
 [versions]
-agp = "8.6.1"
-kotlin = "1.9.23"
+agp = "8.5.2"
+kotlin = "2.0.0"
 coreKtx = "1.10.1"
 activityCompose = "1.8.0"
 material3 = "1.1.1"
 espressoCore = "3.5.1"
 composeBom = "2024.05.00"
-screenshot = "0.0.1-alpha01"
+screenshot = "0.0.1-alpha11"
 uiToolingPreview = "1.5.1"
 uiTooling = "1.5.1"
 junit = "4.13.2"
@@ -28,7 +28,7 @@ androidx-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-test-junit
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
-#screenshot-validation-api = { group = "com.android.tools.screenshot", name = "screenshot-validation-api", version.ref = "screenshot" }
+screenshot-validation-api = { group = "com.android.tools.screenshot", name = "screenshot-validation-api", version.ref = "screenshot" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

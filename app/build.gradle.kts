@@ -1,17 +1,18 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.screenshot) // official Compose screenshot plugin
 }
 
 android {
     namespace = "com.example.composescreenshotofficial"
-    compileSdk = 36
+    compileSdk = 34
 
     defaultConfig {
         applicationId = "com.example.composescreenshotofficial"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 34
         versionCode = 1
         versionName = "1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -23,13 +24,6 @@ android {
     }
     kotlinOptions {
         jvmTarget = "11"
-    }
-
-    buildFeatures {
-        compose = true
-    }
-    composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.13"
     }
 
     // enable experimental flag for the plugin
@@ -48,7 +42,7 @@ dependencies {
     androidTestImplementation(libs.androidx.junit)
 
     // screenshot validation API
-   // screenshotTestImplementation(libs.screenshot.validation.api)
+   screenshotTestImplementation(libs.screenshot.validation.api)
 
     testImplementation(libs.junit)
 }
