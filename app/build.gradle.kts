@@ -5,7 +5,9 @@ plugins {
     alias(libs.plugins.screenshot)
     alias(libs.plugins.detekt.plugin)
 }
-
+dependencies {
+    detektPlugins(libs.detekt)
+}
 android {
     namespace = "com.example.composescreenshotofficial"
     compileSdk = 34
@@ -41,6 +43,7 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+
 
     // screenshot validation API
    screenshotTestImplementation(libs.screenshot.validation.api)

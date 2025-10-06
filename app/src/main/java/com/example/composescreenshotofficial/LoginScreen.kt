@@ -25,7 +25,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -58,7 +57,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 
 @Composable
-fun LoginScreen(
+internal fun LoginScreen(
     onLogin: suspend (email: String, password: String, remember: Boolean) -> Boolean,
     onForgotPassword: () -> Unit = {},
     onSignUp: () -> Unit = {},
@@ -85,12 +84,16 @@ fun LoginScreen(
         if (!android.util.Patterns.EMAIL_ADDRESS.matcher(email).matches()) {
             emailError = "Enter a valid email"
             ok = false
-        } else emailError = null
+        } else {
+            emailError = null
+        }
 
         if (password.length < 6) {
             passwordError = "Password must be at least 6 characters"
             ok = false
-        } else passwordError = null
+        } else {
+            passwordError = null
+        }
 
         return ok
     }
@@ -122,10 +125,16 @@ fun LoginScreen(
 
                 LoginCard(
                     email = email,
-                    onEmailChange = { email = it; if (emailError != null) emailError = null },
+                    onEmailChange = {
+                        email = it
+                        if (emailError != null) emailError = null
+                    },
                     emailError = emailError,
                     password = password,
-                    onPasswordChange = { password = it; if (passwordError != null) passwordError = null },
+                    onPasswordChange = {
+                        password = it
+                        if (passwordError != null) passwordError = null
+                    },
                     passwordError = passwordError,
                     passwordVisible = passwordVisible,
                     onTogglePasswordVisible = { passwordVisible = !passwordVisible },
@@ -184,7 +193,11 @@ private fun HeaderTexts() {
     )
     Text(
         text = "Sign in to continue",
-        style = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+        style = MaterialTheme.typography.bodyMedium.copy(
+            color = MaterialTheme.colorScheme.onBackground.copy(
+                alpha = 0.7f
+            )
+        )
     )
 }
 
@@ -230,7 +243,10 @@ private fun LoginCard(
             Spacer(Modifier.height(8.dp))
             LoginButton(isLoading = isLoading, onClick = onSubmit)
             Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 HorizontalDivider(modifier = Modifier.weight(1f))
                 Text(
                     "  or  ",

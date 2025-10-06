@@ -1,5 +1,6 @@
 package com.example.composescreenshotofficial
 
+import LoginScreen
 import android.os.Bundle
 
 import androidx.activity.ComponentActivity
@@ -18,12 +19,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            SampleScreen()
+            LoginScreen(
+                onLogin = { email, password, remember ->
+                    fakeLogin(email, password, remember)
+                },
+                onForgotPassword = {
+                    // Handle "Forgot password" navigation
+                },
+                onSignUp = {
+                    // Handle "Sign up" navigation
+                }
+            )
         }
     }
 }
@@ -49,4 +61,10 @@ fun SampleScreen() {
              }
          }
      }
+}
+
+suspend fun fakeLogin(email: String, password: String, remember: Boolean): Boolean {
+    delay(1500) // simulate network delay
+    // Just a demo check — replace with real authentication
+    return email == "test@example.com" && password == "password123"
 }
