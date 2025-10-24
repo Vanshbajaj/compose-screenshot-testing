@@ -5,18 +5,20 @@
 .gradle/
 build/
 local.properties
-.gradle/
 captures/
 .externalNativeBuild/
 .cxx/
 *.apk
-*.ap_ 
+*.ap_
 *.dex
 *.class
 bin/
 gen/
 out/
+
+# ===========================================
 # IntelliJ/Android Studio
+# ===========================================
 .idea/
 *.ipr
 *.iws
@@ -31,7 +33,7 @@ hs_err_pid*
 replay_pid*
 
 # ===========================================
-# Screenshot Testing
+# Screenshot Testing (Compose)
 # ===========================================
 
 # Ignore generated screenshot outputs
@@ -40,10 +42,15 @@ app/build/screenshot/
 app/build/test-results/
 app/build/reports/
 
-# DO commit golden images
-# (by default the plugin stores goldens under src/screenshotTest/golden/)
-# So don’t ignore these:
-# !app/src/screenshotTest/golden/
+# ✅ DO commit golden images
+# Default location for screenshot plugin golden images
+!app/src/screenshotTest/golden/
+!app/src/screenshotTest/golden/**
+
+# ✅ If you store snapshot images under test/
+# (e.g. app/src/test/snapshots/)
+!app/src/test/snapshots/
+!app/src/test/snapshots/**
 
 # ===========================================
 # Gradle Wrapper
@@ -51,4 +58,3 @@ app/build/reports/
 !gradle/wrapper/gradle-wrapper.jar
 !gradlew
 !gradlew.bat
-
