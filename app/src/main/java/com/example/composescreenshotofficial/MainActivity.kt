@@ -45,7 +45,7 @@ fun SampleScreen(navController: NavHostController) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(
-                "Hello, Compose Official Screenshot!",
+                "Hello, Welcome to Compose Official Screenshot!",
                 style = MaterialTheme.typography.headlineSmall
             )
             Spacer(Modifier.height(8.dp))
