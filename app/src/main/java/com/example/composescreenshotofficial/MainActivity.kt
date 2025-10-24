@@ -19,48 +19,43 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavHostController
 import kotlinx.coroutines.delay
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            LoginScreen(
-                onLogin = { email, password, remember ->
-                    fakeLogin(email, password, remember)
-                },
-                onForgotPassword = {
-                    // Handle "Forgot password" navigation
-                },
-                onSignUp = {
-                    // Handle "Sign up" navigation
-                }
-            )
+            AppNavigation()
         }
     }
 }
 
 @Composable
-fun SampleScreen() {
+fun SampleScreen(navController: NavHostController) {
     Surface(
-         modifier = Modifier.fillMaxSize(),
-         color = MaterialTheme.colorScheme.background
-     ) {
-         Column(
-             modifier = Modifier.fillMaxSize().padding(16.dp),
-             verticalArrangement = Arrangement.Center,
-             horizontalAlignment = Alignment.CenterHorizontally
-         ) {
-             Text(
-                 "Hello, Compose Official Screenshot!",
-                 style = MaterialTheme.typography.headlineSmall
-             )
-             Spacer(Modifier.height(8.dp))
-             Button(onClick = {}) {
-                 Text("Press me")
-             }
-         }
-     }
+        modifier = Modifier.fillMaxSize(),
+        color = MaterialTheme.colorScheme.background
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                "Hello, Compose Official Screenshot!",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(onClick = {
+                navController.navigate("screenB")
+            }) {
+                Text("Press me")
+            }
+        }
+    }
 }
 
 suspend fun fakeLogin(email: String, password: String, remember: Boolean): Boolean {

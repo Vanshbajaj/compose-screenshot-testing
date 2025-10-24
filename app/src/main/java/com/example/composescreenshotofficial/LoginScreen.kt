@@ -54,6 +54,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.navigation.NavHostController
 import kotlinx.coroutines.launch
 
 @Composable
@@ -61,7 +62,8 @@ internal fun LoginScreen(
     onLogin: suspend (email: String, password: String, remember: Boolean) -> Boolean,
     onForgotPassword: () -> Unit = {},
     onSignUp: () -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    navController: NavHostController
 ) {
     val scope = rememberCoroutineScope()
     val focusManager = LocalFocusManager.current

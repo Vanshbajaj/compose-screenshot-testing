@@ -43,6 +43,7 @@ dependencies {
     debugImplementation(libs.androidx.ui.test.manifest)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    implementation(libs.androidx.navigation.compose)
 
 
     // screenshot validation API
